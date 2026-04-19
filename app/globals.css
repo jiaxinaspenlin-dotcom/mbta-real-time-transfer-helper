@@ -1,0 +1,398 @@
+@import "leaflet/dist/leaflet.css";
+
+:root {
+  --page: #e7edf4;
+  --shell: #f7f9fc;
+  --card: #ffffff;
+  --text: #0f172a;
+  --muted: #64748b;
+  --line: #dce4ee;
+  --navy: #324155;
+  --shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+  --radius: 26px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: linear-gradient(180deg, #eef3f8 0%, #e6edf5 100%); }
+button, input, select, textarea { font: inherit; }
+
+.pageShell {
+  min-height: 100vh;
+  padding: 14px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.appShell {
+  position: relative;
+  width: min(94vw, 1160px);
+  min-height: calc(100vh - 28px);
+  background: var(--shell);
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  border-radius: 30px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.appHeader {
+  background: var(--navy);
+  color: white;
+  padding: 18px 22px;
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+}
+.appHeader h1 { margin: 4px 0 0; font-size: 34px; line-height: 1.02; }
+.appHeader p { margin: 8px 0 0; color: rgba(255,255,255,0.78); max-width: 640px; }
+.eyebrow, .sectionHeader {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 11px;
+  font-weight: 800;
+}
+.eyebrow { opacity: 0.72; }
+.linePills { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.linePill { background: rgba(255,255,255,0.08); border: 1.5px solid; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 800; white-space: nowrap; }
+
+.mainGrid {
+  padding: 22px;
+  display: grid;
+  grid-template-columns: 350px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.mainGrid.planned .mapCard .mapCanvas {
+  height: 660px;
+}
+.leftColumn, .rightColumn {
+  display: grid;
+  gap: 16px;
+}
+
+.panelCard {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 22px;
+}
+.panelCard h2 { margin: 4px 0 0; font-size: 28px; line-height: 1.05; }
+.plannerCard h2, .mapCard h2, .summaryCard h2, .directionsCard h2 { font-size: 28px; }
+.mutedText { color: var(--muted); margin: 8px 0 0; }
+
+.panelHeaderRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.swapButton {
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  border-radius: 14px;
+  padding: 10px 14px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin-top: 18px;
+}
+.fieldBlock {
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+.fieldLabel { font-size: 13px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #334155; }
+.fieldInput {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #cfd8e3;
+  background: #f8fafc;
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--text);
+}
+.sliderCard {
+  border: 1px solid #cfd8e3;
+  background: #f8fafc;
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 10px;
+}
+.sliderCard input { width: 100%; }
+.sliderMeta { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 13px; }
+.sliderMeta strong { color: var(--text); }
+
+.plannerNote {
+  margin-top: 18px;
+  border: 1px dashed #cfd8e3;
+  background: #f8fafc;
+  border-radius: 20px;
+  padding: 16px;
+}
+.assistRow { display: grid; gap: 10px; margin-top: 12px; }
+.assistInput {
+  min-height: 92px;
+  resize: vertical;
+  border: 1px solid #cfd8e3;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: white;
+}
+.suggestionsGrid { display: grid; gap: 10px; margin-top: 12px; }
+.suggestionCard {
+  border: 1px solid #d3deea;
+  background: white;
+  border-radius: 16px;
+  padding: 12px 14px;
+  text-align: left;
+  display: grid;
+  gap: 6px;
+}
+.suggestionCard strong { font-size: 15px; }
+.suggestionCard span { font-size: 13px; color: var(--muted); }
+
+.actionRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+}
+.primaryButton, .secondaryButton {
+  border-radius: 14px;
+  padding: 12px 16px;
+  font-weight: 800;
+  border: none;
+}
+.primaryButton {
+  background: #1d4ed8;
+  color: white;
+}
+.secondaryButton {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+.planButton { min-width: 180px; }
+.errorBox {
+  border: 1px solid #fecaca;
+  background: #fff1f2;
+  color: #991b1b;
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-top: 14px;
+}
+
+.mapCard .mapCanvas {
+  margin-top: 14px;
+  height: 520px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.summaryTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+.summaryGrid > * { min-width: 0; }
+.metricCard {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 12px 10px;
+  display: grid;
+  gap: 4px;
+  background: #fbfdff;
+  min-width: 0;
+}
+.metricCard span { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 800; }
+.metricCard strong { display: block; min-width: 0; font-size: clamp(14px, 1.15vw, 22px); line-height: 1.05; word-break: break-word; overflow-wrap: anywhere; }
+.statusStrip {
+  margin-top: 14px;
+  border-radius: 14px;
+  background: #eef4ff;
+  color: #1e3a8a;
+  padding: 12px 14px;
+  font-weight: 700;
+}
+
+.connectionList { display: grid; gap: 12px; margin-top: 16px; }
+.connectionItem {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  background: #fbfdff;
+  display: grid;
+  gap: 12px;
+}
+.connectionTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.connectionTitleBlock, .connectionTimingBlock { display: grid; gap: 4px; }
+.connectionTitleBlock strong { font-size: 16px; }
+.connectionTitleBlock span, .connectionTimingBlock span, .connectionOptionLabel { color: var(--muted); font-size: 12px; }
+.connectionOptions {
+  display: grid;
+  gap: 10px;
+}
+.connectionOption {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: white;
+}
+.connectionOption strong { display: block; margin-top: 4px; font-size: 15px; line-height: 1.1; }
+.confidencePill {
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.confidence-likely { background: #dcfce7; color: #166534; }
+.confidence-risky { background: #fef3c7; color: #92400e; }
+.confidence-unlikely { background: #fee2e2; color: #991b1b; }
+.confidence-scheduled { background: #e2e8f0; color: #334155; }
+
+.directionsList { display: grid; gap: 12px; margin-top: 16px; }
+.directionItem {
+  border: 1px solid var(--line);
+  border-left: 6px solid #94a3b8;
+  border-radius: 18px;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  gap: 14px;
+  align-items: center;
+  background: #fbfdff;
+}
+.directionIndex {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: #0f172a;
+  color: white;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+}
+.directionBody { display: grid; gap: 4px; }
+.directionBody span { color: var(--muted); }
+.directionBadge {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-weight: 700;
+  color: #334155;
+  background: white;
+  white-space: nowrap;
+}
+
+.geminiLauncher {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  border: none;
+  background: linear-gradient(135deg, #1d4ed8, #4338ca);
+  color: white;
+  font-size: 28px;
+  font-weight: 900;
+  box-shadow: 0 18px 36px rgba(37, 99, 235, 0.3);
+  cursor: pointer;
+  z-index: 30;
+}
+
+.assistModal {
+  position: absolute;
+  right: 18px;
+  bottom: 90px;
+  width: min(460px, calc(100% - 36px));
+  min-height: 260px;
+  max-height: 68vh;
+  overflow: auto;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+  padding: 22px;
+  z-index: 30;
+}
+
+.assistModalHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.assistModalHeader h3 {
+  margin: 4px 0 0;
+  font-size: 24px;
+  line-height: 1.05;
+}
+.assistClose {
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  color: #475569;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 700;
+}
+
+@media (max-width: 960px) {
+  .appShell {
+    width: min(96vw, 920px);
+  }
+  .mainGrid {
+    grid-template-columns: 1fr;
+  }
+  .summaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .geminiLauncher { right: 12px; bottom: 12px; }
+  .assistModal { right: 12px; bottom: 78px; width: calc(100% - 24px); }
+}
+
+@media (max-width: 680px) {
+  .connectionTop { display: grid; }
+  .connectionOption { grid-template-columns: 1fr; }
+  .pageShell { padding: 8px; }
+  .appShell { width: 100%; min-height: calc(100vh - 16px); border-radius: 24px; }
+  .appHeader { padding: 16px; display: grid; }
+  .appHeader h1 { font-size: 28px; }
+  .mainGrid { padding: 12px; }
+  .panelCard { padding: 14px; border-radius: 20px; }
+  .panelCard h2 { font-size: 22px; }
+  .formGrid { grid-template-columns: 1fr; }
+  .fieldBlock { grid-column: auto; }
+  .summaryGrid { grid-template-columns: 1fr; }
+  .directionItem { grid-template-columns: 32px 1fr; }
+  .directionBadge { grid-column: 2 / 3; justify-self: start; }
+}
