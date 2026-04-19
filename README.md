@@ -79,8 +79,6 @@ git clone https://github.com/jiaxinaspenlin-dotcom/mbta-real-time-transfer-helpe
 cd mbta-real-time-transfer-helper
 ```
 
-## Installation
-
 Install dependencies:
 
 ```bash
