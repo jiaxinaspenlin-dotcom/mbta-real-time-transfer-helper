@@ -49,7 +49,9 @@ walk-time and what-if controls only appear once there is an answer to refine.
 
 - **Interactive map** — every rapid transit line and station drawn from the live
   network. Tap a station for "Start here" / "End here"; the planned trip is drawn
-  thick over the dimmed rest of the system.
+  thick over the dimmed rest of the system. Bus legs and walking links appear as
+  part of a planned trip (walks dashed), since drawing 149 bus routes at rest would
+  swamp the map.
 - **Service alerts** — active suspensions, closures and delays touching the trip.
   These are also returned when a leg has no service, so a dead end explains itself.
 - **Rerouting** — the planner routes around whatever is out of service. During a
@@ -180,6 +182,12 @@ Numeric inputs are clamped server-side (walk 1–15 min, later start 0–60 min,
 
 Light and dark themes follow the system setting.
 
+Lines are shown as MBTA-style bullets: a coloured circle with the branch letter —
+**RL**, **OL**, **BL**, **M**, and **B/C/D/E** for the Green Line branches. Colour
+carries the line and the letter carries the branch, so the blue **BL** and the green
+**B** do not collide. Colours and names come from the API; only the letter is a
+display convention, and any route without one falls back to a derived initial.
+
 ## Project structure
 
 ```
@@ -187,8 +195,10 @@ app/
   page.tsx                     UI (client component)
   layout.tsx                   Metadata and viewport
   globals.css                  Design tokens, layout, responsive rules
-  api/network/route.ts         Live network for the client
-  api/plan/route.ts            Trip planning and confidence scoring
+  icon.svg                     Favicon (interchange mark)
+  api/network/route.ts         Subway network for the map
+  api/stops/route.ts           Stop search across subway and bus
+  api/plan/route.ts            Trip planning, rerouting, confidence scoring
   api/station-assist/route.ts  OpenAI station matching
 components/
   RouteMap.tsx                 Leaflet map, selection, trip overlay
@@ -205,7 +215,8 @@ lib/
 ## Known limitations
 
 - **No commuter rail or ferry.** The planner loads route types 0, 1 and 3.
-- **Walk time is your input**, for the reason described above.
+- **In-station walk time is your input**, for the reason described above. Walks
+  between separate stops are measured from real coordinates.
 - **Early morning and late night** have sparse predictions. The app falls back to
   the timetable where it can and reports the gap where it cannot, rather than
   showing times that do not exist.

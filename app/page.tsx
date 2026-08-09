@@ -97,6 +97,25 @@ function confidenceClass(label: string | null) {
   return label ? `conf conf-${label.toLowerCase()}` : "conf conf-unknown";
 }
 
+/**
+ * What goes inside the line bullet. Trunk lines use the two-letter form, Green
+ * branches use their branch letter, and Mattapan follows the MBTA service guide.
+ * Presentation only — colours and names still come from the API, and any route not
+ * listed falls back to a derived letter.
+ */
+const ROUTE_GLYPHS: Record<string, string> = {
+  Red: "RL",
+  Orange: "OL",
+  Blue: "BL",
+  Mattapan: "M"
+};
+
+function routeGlyph(route: { id: string; shortName: string }) {
+  if (ROUTE_GLYPHS[route.id]) return ROUTE_GLYPHS[route.id];
+  const parts = route.shortName.trim().split(/\s+/);
+  return parts.length > 1 ? parts[parts.length - 1] : parts[0].charAt(0);
+}
+
 function distanceKm(aLat: number, aLon: number, bLat: number, bLon: number) {
   const toRad = (deg: number) => (deg * Math.PI) / 180;
   const dLat = toRad(bLat - aLat);
@@ -405,8 +424,15 @@ export default function HomePage() {
         </div>
         <div className="lineKey">
           {network.routes.map((route) => (
-            <span key={route.id} className="lineChip" style={{ background: route.color, color: route.textColor }}>
-              {route.shortName}
+            <span
+              key={route.id}
+              className="lineChip"
+              style={{ background: route.color, color: route.textColor }}
+              title={route.name}
+              aria-label={route.name}
+              role="img"
+            >
+              {routeGlyph(route)}
             </span>
           ))}
         </div>
