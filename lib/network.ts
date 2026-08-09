@@ -1,155 +1,324 @@
-export type LineId = "Red" | "Orange" | "Blue" | "Green-E";
+import { MbtaApiError, mbtaFetch } from "./mbta-api";
+
+export type LineRoute = {
+  id: string;
+  name: string;
+  shortName: string;
+  color: string;
+  textColor: string;
+  sortOrder: number;
+};
 
 export type Station = {
   id: string;
   name: string;
   lat: number;
   lon: number;
-  lines: LineId[];
-  stopId?: string;
+  routeIds: string[];
 };
 
-export const LINE_COLORS: Record<LineId, string> = {
-  Red: "#DA291C",
-  Orange: "#ED8B00",
-  Blue: "#003DA5",
-  "Green-E": "#00843D"
+export type Pattern = {
+  id: string;
+  routeId: string;
+  directionId: number;
+  name: string;
+  stationIds: string[];
 };
 
-export const LINE_LABELS: Record<LineId, string> = {
-  Red: "Red Line",
-  Orange: "Orange Line",
-  Blue: "Blue Line",
-  "Green-E": "Green Line E"
+export type Network = {
+  routes: LineRoute[];
+  routeById: Record<string, LineRoute>;
+  stations: Station[];
+  stationById: Record<string, Station>;
+  patterns: Pattern[];
+  /** Platform-level stop id -> parent station id, for reading prediction payloads. */
+  platformToStation: Record<string, string>;
+  adjacency: Map<string, Array<{ to: string; routeId: string }>>;
 };
 
-export const STATIONS: Station[] = [
-  { id: "alewife", name: "Alewife", lat: 42.395428, lon: -71.142483, lines: ["Red"], stopId: "place-alfcl" },
-  { id: "harvard", name: "Harvard", lat: 42.373362, lon: -71.118956, lines: ["Red"], stopId: "place-harsq" },
-  { id: "park-street", name: "Park Street", lat: 42.356395, lon: -71.062424, lines: ["Red", "Green-E"], stopId: "place-pktrm" },
-  { id: "downtown-crossing", name: "Downtown Crossing", lat: 42.355518, lon: -71.060225, lines: ["Red", "Orange"], stopId: "place-dwnxg" },
-  { id: "south-station", name: "South Station", lat: 42.352271, lon: -71.055242, lines: ["Red"], stopId: "place-sstat" },
-  { id: "north-station", name: "North Station", lat: 42.365577, lon: -71.06129, lines: ["Orange", "Green-E"], stopId: "place-north" },
-  { id: "state", name: "State", lat: 42.358978, lon: -71.057598, lines: ["Orange", "Blue"], stopId: "place-state" },
-  { id: "government-center", name: "Government Center", lat: 42.359705, lon: -71.059215, lines: ["Blue", "Green-E"], stopId: "place-gover" },
-  { id: "bowdoin", name: "Bowdoin", lat: 42.361365, lon: -71.062037, lines: ["Blue"], stopId: "place-bomnl" },
-  { id: "airport", name: "Airport", lat: 42.374262, lon: -71.030395, lines: ["Blue"], stopId: "place-aport" },
-  { id: "wonderland", name: "Wonderland", lat: 42.41342, lon: -70.991648, lines: ["Blue"], stopId: "place-wondl" },
-  { id: "forest-hills", name: "Forest Hills", lat: 42.300523, lon: -71.113686, lines: ["Orange"], stopId: "place-forhl" },
-  { id: "back-bay", name: "Back Bay", lat: 42.34735, lon: -71.075727, lines: ["Orange"], stopId: "place-bbsta" },
-  { id: "ruggles", name: "Ruggles", lat: 42.336377, lon: -71.088961, lines: ["Orange"], stopId: "place-rugg" },
-  { id: "lechmere", name: "Lechmere", lat: 42.370772, lon: -71.076536, lines: ["Green-E"], stopId: "place-lech" },
-  { id: "science-park", name: "Science Park/West End", lat: 42.366664, lon: -71.067666, lines: ["Green-E"], stopId: "place-spmnl" },
-  { id: "copley", name: "Copley", lat: 42.349974, lon: -71.077447, lines: ["Green-E"], stopId: "place-coecl" },
-  { id: "northeastern", name: "Northeastern University", lat: 42.340401, lon: -71.089633, lines: ["Green-E"], stopId: "place-nuniv" }
-];
+const NETWORK_TTL_MS = 12 * 60 * 60 * 1000;
+let cached: { at: number; network: Network } | null = null;
 
-export const STATION_BY_ID = Object.fromEntries(STATIONS.map((s) => [s.id, s])) as Record<string, Station>;
+/** Strip the redundant "Line" suffix so pills stay short; keep whatever the API gives otherwise. */
+function shortenRouteName(longName: string) {
+  return longName.replace(/\s+Line\b/, "").trim() || longName;
+}
 
-const LINE_SEQUENCES: Record<LineId, string[]> = {
-  Red: ["alewife", "harvard", "park-street", "downtown-crossing", "south-station"],
-  Orange: ["forest-hills", "ruggles", "back-bay", "downtown-crossing", "state", "north-station"],
-  Blue: ["bowdoin", "government-center", "state", "airport", "wonderland"],
-  "Green-E": ["northeastern", "copley", "park-street", "government-center", "north-station", "science-park", "lechmere"]
-};
+async function buildNetwork(): Promise<Network> {
+  const routeResponse = await mbtaFetch<any>("/routes", { "filter[type]": "0,1", sort: "sort_order" }, 86400);
+  const routes: LineRoute[] = (routeResponse?.data ?? []).map((item: any) => ({
+    id: item.id,
+    name: item.attributes?.long_name ?? item.id,
+    shortName: shortenRouteName(item.attributes?.long_name ?? item.id),
+    color: `#${item.attributes?.color ?? "6B7280"}`,
+    textColor: `#${item.attributes?.text_color ?? "FFFFFF"}`,
+    sortOrder: item.attributes?.sort_order ?? 0
+  }));
 
-export type TripStep = {
-  kind: "ride" | "transfer";
-  line?: LineId;
+  if (!routes.length) {
+    throw new MbtaApiError("The MBTA API returned no subway routes.");
+  }
+
+  const patternResponse = await mbtaFetch<any>(
+    "/route_patterns",
+    {
+      "filter[route]": routes.map((r) => r.id).join(","),
+      "filter[canonical]": "true",
+      include: "representative_trip.stops"
+    },
+    86400
+  );
+
+  const included = new Map<string, any>((patternResponse?.included ?? []).map((item: any) => [`${item.type}:${item.id}`, item]));
+
+  const stationById: Record<string, Station> = {};
+  const platformToStation: Record<string, string> = {};
+  const patterns: Pattern[] = [];
+
+  for (const item of patternResponse?.data ?? []) {
+    const tripRef = item.relationships?.representative_trip?.data;
+    if (!tripRef) continue;
+    const trip = included.get(`trip:${tripRef.id}`);
+    const stopRefs = trip?.relationships?.stops?.data ?? [];
+
+    const stationIds: string[] = [];
+    for (const stopRef of stopRefs) {
+      const stop = included.get(`stop:${stopRef.id}`);
+      if (!stop) continue;
+      const parentId = stop.relationships?.parent_station?.data?.id ?? stop.id;
+      const attributes = stop.attributes ?? {};
+      if (attributes.latitude == null || attributes.longitude == null) continue;
+
+      platformToStation[stop.id] = parentId;
+      if (!stationById[parentId]) {
+        stationById[parentId] = {
+          id: parentId,
+          name: attributes.name,
+          lat: attributes.latitude,
+          lon: attributes.longitude,
+          routeIds: []
+        };
+      }
+      const station = stationById[parentId];
+      if (!station.routeIds.includes(item.relationships.route.data.id)) {
+        station.routeIds.push(item.relationships.route.data.id);
+      }
+      // A pattern can list several platforms of the same station in a row.
+      if (stationIds[stationIds.length - 1] !== parentId) stationIds.push(parentId);
+    }
+
+    if (stationIds.length < 2) continue;
+    patterns.push({
+      id: item.id,
+      routeId: item.relationships.route.data.id,
+      directionId: item.attributes?.direction_id ?? 0,
+      name: item.attributes?.name ?? item.id,
+      stationIds
+    });
+  }
+
+  if (!patterns.length) {
+    throw new MbtaApiError("The MBTA API returned no canonical route patterns.");
+  }
+
+  const adjacency = new Map<string, Array<{ to: string; routeId: string }>>();
+  const link = (from: string, to: string, routeId: string) => {
+    const edges = adjacency.get(from) ?? [];
+    if (!edges.some((edge) => edge.to === to && edge.routeId === routeId)) edges.push({ to, routeId });
+    adjacency.set(from, edges);
+  };
+  for (const pattern of patterns) {
+    for (let i = 0; i < pattern.stationIds.length - 1; i += 1) {
+      link(pattern.stationIds[i], pattern.stationIds[i + 1], pattern.routeId);
+      link(pattern.stationIds[i + 1], pattern.stationIds[i], pattern.routeId);
+    }
+  }
+
+  const usedRouteIds = new Set(patterns.map((p) => p.routeId));
+  const activeRoutes = routes.filter((route) => usedRouteIds.has(route.id));
+
+  return {
+    routes: activeRoutes,
+    routeById: Object.fromEntries(activeRoutes.map((route) => [route.id, route])),
+    stations: Object.values(stationById).sort((a, b) => a.name.localeCompare(b.name)),
+    stationById,
+    patterns,
+    platformToStation,
+    adjacency
+  };
+}
+
+export async function loadNetwork(): Promise<Network> {
+  if (cached && Date.now() - cached.at < NETWORK_TTL_MS) return cached.network;
+  const network = await buildNetwork();
+  cached = { at: Date.now(), network };
+  return network;
+}
+
+/** Line shapes for the map, drawn from the canonical outbound pattern of every branch. */
+export function networkGeometry(network: Network) {
+  return network.patterns
+    .filter((pattern) => pattern.directionId === 0)
+    .map((pattern) => ({
+      id: pattern.id,
+      routeId: pattern.routeId,
+      points: pattern.stationIds.map((id) => {
+        const station = network.stationById[id];
+        return [station.lat, station.lon] as [number, number];
+      })
+    }));
+}
+
+export type Ride = {
+  routeId: string;
+  directionId: number | null;
   from: Station;
   to: Station;
   stations: Station[];
 };
 
+export type TripStep =
+  | { kind: "ride"; ride: Ride }
+  | { kind: "transfer"; station: Station; fromRouteId: string; toRouteId: string };
+
 export type PlannedTrip = {
   origin: Station;
   destination: Station;
+  rides: Ride[];
   steps: TripStep[];
 };
 
-function buildAdjacency() {
-  const adj = new Map<string, string[]>();
-  const add = (a: string, b: string) => adj.set(a, [...(adj.get(a) ?? []), b]);
-  Object.values(LINE_SEQUENCES).forEach((seq) => {
-    for (let i = 0; i < seq.length - 1; i += 1) {
-      add(seq[i], seq[i + 1]);
-      add(seq[i + 1], seq[i]);
+const TRANSFER_PENALTY = 1000;
+
+/** Least-transfers-then-fewest-stops search over the live network graph. */
+function searchPath(network: Network, originId: string, destinationId: string) {
+  type State = { station: string; routeId: string };
+  const keyOf = (s: State) => `${s.station}|${s.routeId}`;
+
+  const dist = new Map<string, number>();
+  const prev = new Map<string, { key: string; state: State } | null>();
+  const states = new Map<string, State>();
+
+  const startEdges = network.adjacency.get(originId) ?? [];
+  for (const edge of startEdges) {
+    const state = { station: originId, routeId: edge.routeId };
+    const key = keyOf(state);
+    if (!dist.has(key)) {
+      dist.set(key, 0);
+      prev.set(key, null);
+      states.set(key, state);
     }
-  });
-  return adj;
-}
+  }
 
-const ADJ = buildAdjacency();
+  const visited = new Set<string>();
+  let bestFinalKey: string | null = null;
 
-export function listStations() {
-  return STATIONS.slice().sort((a, b) => a.name.localeCompare(b.name));
-}
+  while (true) {
+    let currentKey: string | null = null;
+    let currentCost = Infinity;
+    for (const [key, cost] of dist) {
+      if (!visited.has(key) && cost < currentCost) {
+        currentCost = cost;
+        currentKey = key;
+      }
+    }
+    if (!currentKey) break;
+    visited.add(currentKey);
 
-export function stationsForSelect() {
-  return listStations().map((station) => ({ value: station.id, label: station.name }));
-}
+    const state = states.get(currentKey)!;
+    if (state.station === destinationId) {
+      bestFinalKey = currentKey;
+      break;
+    }
 
-function commonLines(a: Station, b: Station): LineId[] {
-  return a.lines.filter((line): line is LineId => b.lines.includes(line));
-}
-
-function stationsBetween(line: LineId, fromId: string, toId: string) {
-  const seq = LINE_SEQUENCES[line];
-  const a = seq.indexOf(fromId);
-  const b = seq.indexOf(toId);
-  if (a === -1 || b === -1) return [];
-  const segment = a <= b ? seq.slice(a, b + 1) : seq.slice(b, a + 1).reverse();
-  return segment.map((id) => STATION_BY_ID[id]);
-}
-
-function shortestPath(originId: string, destinationId: string) {
-  const queue = [originId];
-  const prev = new Map<string, string | null>();
-  prev.set(originId, null);
-  while (queue.length) {
-    const current = queue.shift()!;
-    if (current === destinationId) break;
-    for (const next of ADJ.get(current) ?? []) {
-      if (!prev.has(next)) {
-        prev.set(next, current);
-        queue.push(next);
+    for (const edge of network.adjacency.get(state.station) ?? []) {
+      const next: State = { station: edge.to, routeId: edge.routeId };
+      const nextKey = keyOf(next);
+      const cost = currentCost + 1 + (edge.routeId === state.routeId ? 0 : TRANSFER_PENALTY);
+      if (cost < (dist.get(nextKey) ?? Infinity)) {
+        dist.set(nextKey, cost);
+        prev.set(nextKey, { key: currentKey, state });
+        states.set(nextKey, next);
       }
     }
   }
-  if (!prev.has(destinationId)) return null;
-  const path: string[] = [];
-  let cursor: string | null = destinationId;
+
+  if (!bestFinalKey) return null;
+
+  const chain: State[] = [];
+  let cursor: string | null = bestFinalKey;
   while (cursor) {
-    path.push(cursor);
-    cursor = prev.get(cursor) ?? null;
+    chain.push(states.get(cursor)!);
+    cursor = prev.get(cursor)?.key ?? null;
   }
-  return path.reverse();
+  return chain.reverse();
 }
 
-export function planTrip(originId: string, destinationId: string): PlannedTrip | null {
-  if (originId === destinationId) return null;
-  const stationPath = shortestPath(originId, destinationId);
-  if (!stationPath || stationPath.length < 2) return null;
-  const steps: TripStep[] = [];
-  let i = 0;
-  while (i < stationPath.length - 1) {
-    const from = STATION_BY_ID[stationPath[i]];
-    const next = STATION_BY_ID[stationPath[i + 1]];
-    const line = commonLines(from, next)[0];
-    if (!line) return null;
-    let j = i + 1;
-    while (j < stationPath.length - 1) {
-      const current = STATION_BY_ID[stationPath[j]];
-      const nxt = STATION_BY_ID[stationPath[j + 1]];
-      if (!commonLines(current, nxt).includes(line)) break;
-      j += 1;
-    }
-    const to = STATION_BY_ID[stationPath[j]];
-    steps.push({ kind: "ride", line, from, to, stations: stationsBetween(line, from.id, to.id) });
-    if (j < stationPath.length - 1) {
-      steps.push({ kind: "transfer", from: to, to, stations: [to] });
-    }
-    i = j;
+function directionFor(network: Network, routeId: string, fromId: string, toId: string) {
+  for (const pattern of network.patterns) {
+    if (pattern.routeId !== routeId) continue;
+    const a = pattern.stationIds.indexOf(fromId);
+    const b = pattern.stationIds.indexOf(toId);
+    if (a !== -1 && b !== -1 && a < b) return pattern.directionId;
   }
-  return { origin: STATION_BY_ID[originId], destination: STATION_BY_ID[destinationId], steps };
+  return null;
+}
+
+function stationsBetween(network: Network, routeId: string, fromId: string, toId: string): Station[] {
+  for (const pattern of network.patterns) {
+    if (pattern.routeId !== routeId) continue;
+    const a = pattern.stationIds.indexOf(fromId);
+    const b = pattern.stationIds.indexOf(toId);
+    if (a !== -1 && b !== -1 && a < b) {
+      return pattern.stationIds.slice(a, b + 1).map((id) => network.stationById[id]);
+    }
+  }
+  return [network.stationById[fromId], network.stationById[toId]];
+}
+
+export function planTrip(network: Network, originId: string, destinationId: string): PlannedTrip | null {
+  if (originId === destinationId) return null;
+  if (!network.stationById[originId] || !network.stationById[destinationId]) return null;
+
+  const chain = searchPath(network, originId, destinationId);
+  if (!chain || chain.length < 2) return null;
+
+  const rides: Ride[] = [];
+  let index = 1;
+  while (index < chain.length) {
+    const routeId = chain[index].routeId;
+    const fromId = chain[index - 1].station;
+    let end = index;
+    while (end + 1 < chain.length && chain[end + 1].routeId === routeId) end += 1;
+    const toId = chain[end].station;
+
+    if (fromId !== toId) {
+      rides.push({
+        routeId,
+        directionId: directionFor(network, routeId, fromId, toId),
+        from: network.stationById[fromId],
+        to: network.stationById[toId],
+        stations: stationsBetween(network, routeId, fromId, toId)
+      });
+    }
+    index = end + 1;
+  }
+
+  if (!rides.length) return null;
+
+  const steps: TripStep[] = [];
+  rides.forEach((ride, i) => {
+    steps.push({ kind: "ride", ride });
+    const next = rides[i + 1];
+    if (next) {
+      steps.push({ kind: "transfer", station: ride.to, fromRouteId: ride.routeId, toRouteId: next.routeId });
+    }
+  });
+
+  return {
+    origin: network.stationById[originId],
+    destination: network.stationById[destinationId],
+    rides,
+    steps
+  };
 }

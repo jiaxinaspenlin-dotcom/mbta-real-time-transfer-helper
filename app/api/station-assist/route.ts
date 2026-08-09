@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { stationCandidatesFallback } from "@/lib/mbta";
-import { STATION_BY_ID } from "@/lib/network";
+import { MbtaApiError } from "@/lib/mbta-api";
+import { loadNetwork } from "@/lib/network";
+
+const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 
 export async function POST(req: NextRequest) {
   const { query } = await req.json();
@@ -8,42 +10,83 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Enter a destination or landmark first." }, { status: 400 });
   }
 
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    return NextResponse.json({ suggestions: stationCandidatesFallback(query) });
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "Station assist is off. Add OPENAI_API_KEY to .env.local to turn it on." },
+      { status: 503 }
+    );
   }
 
-  const prompt = `You are helping with Boston MBTA station selection. Return ONLY JSON in this exact shape: {"suggestions":[{"stationId":"park-street","reason":"..."}]} with 1 to 3 suggestions. Use only these station IDs: alewife, harvard, park-street, downtown-crossing, south-station, north-station, state, government-center, bowdoin, airport, wonderland, forest-hills, back-bay, ruggles, lechmere, science-park, copley, northeastern. Query: ${query}`;
+  let network;
+  try {
+    network = await loadNetwork();
+  } catch (error) {
+    const message = error instanceof MbtaApiError ? error.message : "Could not load the MBTA network.";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+
+  // The model may only choose from stations that actually exist in the live network.
+  const catalog = network.stations
+    .map((station) => `${station.id} = ${station.name} (${station.routeIds.join(", ")})`)
+    .join("\n");
 
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`, {
+    const res = await fetch(OPENAI_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
       body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.2, responseMimeType: "application/json" }
+        // `??` is wrong here: an unset-but-present `OPENAI_MODEL=` in .env is an
+        // empty string, which OpenAI rejects. Fall back on anything blank.
+        model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You match Boston destinations to MBTA rapid transit stations. Reply with JSON shaped " +
+              '{"suggestions":[{"stationId":"...","reason":"..."}]} containing 1 to 3 entries, best first. ' +
+              "Use only station ids from the provided list. Keep each reason under 20 words. " +
+              'If nothing in the list is a reasonable match, reply {"suggestions":[]}.\n\nStations:\n' +
+              catalog
+          },
+          { role: "user", content: String(query) }
+        ]
       })
     });
 
     if (!res.ok) {
-      return NextResponse.json({ suggestions: stationCandidatesFallback(query) });
+      // Pass OpenAI's own reason through; a bare status code is not diagnosable.
+      const detail = await res
+        .json()
+        .then((body) => body?.error?.message)
+        .catch(() => null);
+      return NextResponse.json(
+        { error: `Station assist failed: OpenAI returned ${res.status}${detail ? ` — ${detail}` : "."}` },
+        { status: 502 }
+      );
     }
 
     const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    const parsed = JSON.parse(text ?? "{}");
+    const parsed = JSON.parse(data?.choices?.[0]?.message?.content ?? "{}");
     const suggestions = Array.isArray(parsed?.suggestions) ? parsed.suggestions : [];
+
     const cleaned = suggestions
-      .filter((item: any) => item?.stationId && STATION_BY_ID[item.stationId])
+      .filter((item: any) => item?.stationId && network.stationById[item.stationId])
       .slice(0, 3)
       .map((item: any) => ({
         stationId: item.stationId,
-        stationName: STATION_BY_ID[item.stationId].name,
-        reason: String(item.reason ?? "Good match for the requested destination.")
+        stationName: network.stationById[item.stationId].name,
+        routeIds: network.stationById[item.stationId].routeIds,
+        reason: String(item.reason ?? "").trim()
       }));
 
-    return NextResponse.json({ suggestions: cleaned.length ? cleaned : stationCandidatesFallback(query) });
-  } catch {
-    return NextResponse.json({ suggestions: stationCandidatesFallback(query) });
+    return NextResponse.json({ suggestions: cleaned });
+  } catch (error) {
+    return NextResponse.json({ error: "Station assist could not reach OpenAI." }, { status: 502 });
   }
 }
