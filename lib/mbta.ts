@@ -136,6 +136,55 @@ export async function fetchTripArrivals(
   return found;
 }
 
+export type ServiceAlert = {
+  id: string;
+  header: string;
+  effect: string;
+  severity: number;
+  routeIds: string[];
+  stationIds: string[];
+  /** True when the alert covers a whole route rather than named stops. */
+  wholeRoute: boolean;
+};
+
+const ALERT_TTL = 60;
+
+/**
+ * Active alerts touching the routes in this trip. Without these the app can score
+ * a transfer "Likely" at a station that is closed or being shuttle-bussed.
+ */
+export async function fetchAlerts(network: Network, routeIds: string[]): Promise<ServiceAlert[]> {
+  if (!routeIds.length) return [];
+  const payload = await mbtaFetch<any>(
+    "/alerts",
+    { "filter[route]": Array.from(new Set(routeIds)).join(","), "filter[datetime]": "NOW" },
+    ALERT_TTL
+  );
+
+  return (payload?.data ?? []).map((item: any) => {
+    const entities: any[] = item.attributes?.informed_entity ?? [];
+    const alertRoutes = new Set<string>();
+    const stationIds = new Set<string>();
+    let wholeRoute = false;
+
+    for (const entity of entities) {
+      if (entity.route) alertRoutes.add(entity.route);
+      if (entity.stop) stationIds.add(network.platformToStation[entity.stop] ?? entity.stop);
+      else if (entity.route) wholeRoute = true;
+    }
+
+    return {
+      id: item.id,
+      header: item.attributes?.header ?? "",
+      effect: item.attributes?.effect ?? "UNKNOWN",
+      severity: item.attributes?.severity ?? 0,
+      routeIds: [...alertRoutes],
+      stationIds: [...stationIds],
+      wholeRoute
+    } as ServiceAlert;
+  });
+}
+
 export function formatClock(iso?: string | null) {
   if (!iso) return null;
   return new Date(iso).toLocaleTimeString("en-US", {

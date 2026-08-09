@@ -532,8 +532,9 @@ h3 {
 
 .actions {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: 1fr auto;
   gap: 10px;
+  align-items: center;
 }
 
 .primaryButton,
@@ -705,6 +706,330 @@ h3 {
   color: #0f172a;
   font-weight: 700;
   font-size: 12px;
+}
+
+/* ---------- trip strip ---------- */
+
+.tripStrip {
+  position: sticky;
+  top: 8px;
+  z-index: 800;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 10px 14px;
+  min-height: var(--tap);
+}
+
+.tripStripRoute {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tripStripRoute strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tripStripRoute span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------- now card ---------- */
+
+.nowCard {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 6px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+  display: grid;
+  gap: 6px;
+}
+
+.nowKicker {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.nowCard h2 {
+  font-size: 20px;
+}
+
+.nowToward {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.nowCard p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.nowBig {
+  font-size: 40px;
+  font-weight: 900;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.nowFoot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nowRail {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--neutral-bg);
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.nowRail i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.6s linear;
+}
+
+.nowTransfer {
+  background: var(--warn-bg);
+}
+
+.nowTransfer .nowKicker,
+.nowTransfer p {
+  color: var(--warn-ink);
+}
+
+.nowArrived {
+  border-left-color: #16a34a;
+  justify-items: start;
+}
+
+/* ---------- timeline ---------- */
+
+.timeline {
+  display: grid;
+  gap: 0;
+}
+
+.tlGroup.past {
+  opacity: 0.5;
+}
+
+.tlRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tlDot {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  border: 3px solid var(--text);
+  background: var(--surface);
+}
+
+.tlTransferDot {
+  border-color: #b45309;
+  border-style: dashed;
+}
+
+.tlEnd {
+  border-color: #15803d;
+}
+
+.tlLabel {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tlLabel strong {
+  font-size: 14px;
+}
+
+.tlLabel span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tlRide {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.tlBar {
+  width: 6px;
+  margin-left: 4px;
+  border-radius: 999px;
+  flex: none;
+}
+
+.tlRide.active .tlBar {
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.25);
+}
+
+.tlRideMeta {
+  display: grid;
+  gap: 1px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tlRideMeta strong {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.tlHeadsign {
+  font-style: italic;
+}
+
+/* ---------- alerts ---------- */
+
+.alertCard {
+  border-color: var(--warn-ink);
+}
+
+.alertItem {
+  display: grid;
+  gap: 4px;
+  border-radius: 10px;
+  background: var(--warn-bg);
+  padding: 10px 12px;
+}
+
+.alertEffect {
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--warn-ink);
+}
+
+.alertItem p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--warn-ink);
+}
+
+/* ---------- misc new bits ---------- */
+
+.pickRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ghostButton.small {
+  min-height: 38px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.linkButton {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+  min-height: var(--tap);
+}
+
+.explain {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.nudge {
+  border: 1px dashed var(--accent);
+  background: none;
+  color: var(--accent);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  min-height: 38px;
+}
+
+.countdown.stale {
+  opacity: 0.45;
+}
+
+.delta {
+  display: grid;
+  gap: 8px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+}
+
+.delta > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.delta span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.delta em {
+  font-style: normal;
+}
+
+.teaser {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.errorWhy {
+  margin-top: 6px;
+  font-weight: 700;
+}
+
+.mapOnly {
+  display: none;
 }
 
 /* ---------- summary ---------- */
@@ -1234,7 +1559,12 @@ h3 {
     display: inline;
   }
 
-  /* Keep "Plan trip" reachable without scrolling the whole form. */
+  /* "Choose on map" only makes sense where the map is a separate tab. */
+  .mapOnly {
+    display: inline-flex;
+  }
+
+  /* Keep the primary action reachable without scrolling the whole form. */
   .colPlan .plannerActions {
     position: sticky;
     bottom: calc(60px + env(safe-area-inset-bottom));

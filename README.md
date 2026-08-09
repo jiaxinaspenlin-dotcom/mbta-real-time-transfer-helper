@@ -21,13 +21,37 @@ The MBTA API returns identical coordinates for every platform at a station (all
 eight Park Street platforms share one point) and publishes no transfer times, so any
 per-station walking estimate would be invented.
 
+## The flow
+
+The app is built around the shape of an actual trip rather than a form and a report:
+
+1. **Arrive** — one question, "Where to?". `◎ Nearest to me` fills the origin from
+   your location; the empty state says what you are about to get.
+2. **Choose** — filter-as-you-type pickers, tap-to-select on the map, or describe a
+   landmark in plain language.
+3. **Plan** — there is no plan button. The moment both stations are known, the trip
+   plans itself; the button becomes a refresh.
+4. **Read** — a **Right now** card leads with the single next action, the timeline
+   draws rides and waits to scale, and each transfer explains its own badge in a
+   sentence.
+5. **Ride** — the interface advances on its own: *board → on board → transfer now →
+   on board → arrived*, driven entirely by the leg timestamps.
+6. **Arrive** — a completion state, with the return trip one tap away.
+
+A pinned trip strip keeps the route and its confidence visible throughout, and the
+walk-time and what-if controls only appear once there is an answer to refine.
+
 ## Features
 
 - **Interactive map** — every rapid transit line and station drawn from the live
   network. Tap a station for "Start here" / "End here"; the planned trip is drawn
   thick over the dimmed rest of the system.
+- **Service alerts** — active suspensions, closures and delays touching the trip.
+  These are also returned when a leg has no service, so a dead end explains itself.
 - **Transfer guidance** — set your own walk time (1–15 min); every connection is
-  scored against it.
+  scored against it. A tight connection offers to retry at a faster pace.
+- **Shareable links** — the trip lives in the URL (`?from=…&to=…&walk=…`), so it can
+  be bookmarked or sent to someone. No storage is used.
 - **Live connection finder** — the next departures at each transfer with headsigns.
   The published timetable is used only when the prediction feed is empty, and the
   result is labelled *Live predictions*, *Scheduled times*, or *Live + scheduled*.
@@ -42,7 +66,8 @@ per-station walking estimate would be invented.
   The trip headline reports the tightest connection you are actually put on, so the
   headline and the itinerary never disagree.
 - **What-if scenarios** — simulate leaving up to 60 min later or your train running
-  up to 30 min late. The trip re-plans against live data automatically.
+  up to 30 min late. The trip re-plans against live data automatically and shows the
+  result as a before/after delta rather than silently replacing the numbers.
 - **Station assist** (optional) — describe a destination in plain language and
   OpenAI matches it to real stations. Suggestions are validated against the live
   network, so it cannot invent a stop.
@@ -117,7 +142,7 @@ variables in its environment settings — `.env.local` is intentionally not comm
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/network` | Routes, stations and line shapes for the map and pickers |
-| `POST /api/plan` | Plans a trip; body takes `originId`, `destinationId`, `departAt`, `walkMinutes`, `departShiftMinutes`, `delayMinutes` |
+| `POST /api/plan` | Plans a trip; body takes `originId`, `destinationId`, `departAt`, `walkMinutes`, `departShiftMinutes`, `delayMinutes`. Returns formatted strings **and** raw ISO timestamps, which is what lets the client count down and track the journey without refetching |
 | `POST /api/station-assist` | Plain-language destination → station suggestions |
 
 Numeric inputs are clamped server-side (walk 1–15 min, later start 0–60 min, delay
@@ -145,10 +170,14 @@ app/
   api/station-assist/route.ts  OpenAI station matching
 components/
   RouteMap.tsx                 Leaflet map, selection, trip overlay
+  StationPicker.tsx            Filter-as-you-type station combobox
+  NowCard.tsx                  The advancing "right now" instruction
+  Timeline.tsx                 Rides and waits drawn to scale
 lib/
   mbta-api.ts                  Fetch wrapper, error handling, Boston-time helpers
-  mbta.ts                      Departures, trip arrivals, scoring, formatting
+  mbta.ts                      Departures, trip arrivals, alerts, scoring, formatting
   network.ts                   Network loader, graph, trip planner
+  time.ts                      Countdowns and the journey state machine (client-safe)
 ```
 
 ## Known limitations
@@ -159,3 +188,7 @@ lib/
 - **Early morning and late night** have sparse predictions. The app falls back to
   the timetable where it can and reports the gap where it cannot, rather than
   showing times that do not exist.
+- **No alternative route is offered** when a leg has no service. The app names the
+  problem and shows the alert behind it, but will not yet route around a suspension.
+- **Journey tracking is time-based, not location-based.** It advances on the clock,
+  so it assumes you boarded the train it put you on.

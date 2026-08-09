@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   Departure,
   addMinutes,
+  fetchAlerts,
   fetchDepartures,
   fetchTripArrivals,
   formatClock,
@@ -69,6 +70,36 @@ export async function POST(req: NextRequest) {
     departAt ? new Date(departAt).toISOString() : new Date().toISOString(),
     departShiftMinutes
   );
+
+  // Fetched before the departure loop so that a leg with no service can still be
+  // explained by the alert that caused it. Advisory: never sinks a good plan.
+  const tripRouteIds = trip.rides.map((ride) => ride.routeId);
+  const tripStationIds = new Set(trip.rides.flatMap((ride) => ride.stations.map((station) => station.id)));
+  let alerts: Array<{ id: string; header: string; effect: string; severity: number; routeNames: string[] }> = [];
+  try {
+    const raw = await fetchAlerts(network, tripRouteIds);
+    alerts = raw
+      .filter((alert) => {
+        const onRoute = alert.routeIds.some((routeId) => tripRouteIds.includes(routeId));
+        if (!onRoute) return false;
+        // Whole-route alerts always apply; stop-scoped ones only if they name a
+        // station this trip actually passes through.
+        return alert.wholeRoute || alert.stationIds.some((id) => tripStationIds.has(id));
+      })
+      .sort((a, b) => b.severity - a.severity)
+      .slice(0, 4)
+      .map((alert) => ({
+        id: alert.id,
+        header: alert.header,
+        effect: alert.effect,
+        severity: alert.severity,
+        routeNames: alert.routeIds
+          .filter((routeId) => tripRouteIds.includes(routeId))
+          .map((routeId) => network.routeById[routeId]?.shortName ?? routeId)
+      }));
+  } catch {
+    alerts = [];
+  }
 
   const legs: Leg[] = [];
   const notes: string[] = [];
@@ -146,7 +177,10 @@ export async function POST(req: NextRequest) {
     const route = network.routeById[trip.rides[0].routeId];
     return NextResponse.json(
       {
-        error: `The MBTA has no live or scheduled ${route?.name ?? trip.rides[0].routeId} departures from ${trip.rides[0].from.name} at that time.`
+        error: `The MBTA has no live or scheduled ${route?.name ?? trip.rides[0].routeId} departures from ${trip.rides[0].from.name} at that time.`,
+        // A suspension or closure is usually the reason; hand it back so the UI
+        // can say why instead of just failing.
+        alerts
       },
       { status: 404 }
     );
@@ -179,6 +213,7 @@ export async function POST(req: NextRequest) {
     confidence: string | null;
     missedFirst: boolean;
     headsign: string | null;
+    explain: string | null;
     options: ConnectionOption[];
   };
 
@@ -230,9 +265,46 @@ export async function POST(req: NextRequest) {
         null,
       missedFirst: Boolean(options.length && options[0].serves && !options[0].boarding),
       headsign: current.boarded?.headsign ?? null,
+      // Spell out the arithmetic behind the badge; a colour chip alone is not
+      // something a rider can sanity-check.
+      explain: (() => {
+        const boarding = options.find((option) => option.boarding);
+        if (!arrivalIso || !boarding?.departure) return null;
+        const spare = scoreTransfer({
+          arrivalIso,
+          departureIso: current.boarded?.departureTime,
+          walkMinutes
+        });
+        if (spare.seconds === null) return null;
+        const mins = Math.floor(Math.abs(spare.seconds) / 60);
+        return `You arrive ${formatClock(arrivalIso)}, walk ${walkMinutes} min, and it leaves ${boarding.departure} — ${mins} min to spare.`;
+      })(),
       options
     });
   }
+
+  // Journey legs with raw timestamps: the client uses these to track which part of
+  // the trip the rider is actually in right now.
+  const journeyLegs = legs.map((leg, index) => {
+    const ride = trip.rides[index];
+    const route = network.routeById[leg.routeId];
+    return {
+      index,
+      routeId: leg.routeId,
+      routeName: route?.name ?? leg.routeId,
+      routeShortName: route?.shortName ?? leg.routeId,
+      routeColor: route?.color ?? "#64748b",
+      fromName: network.stationById[leg.fromId].name,
+      toName: network.stationById[leg.toId].name,
+      headsign: leg.boarded?.headsign ?? null,
+      boardIso: leg.boarded?.departureTime ?? null,
+      arriveIso: leg.arrivalIso,
+      boardAt: formatClock(leg.boarded?.departureTime ?? null),
+      arriveAt: formatClock(leg.arrivalIso),
+      stops: Math.max(1, ride.stations.length - 1),
+      walkMinutesAfter: index < legs.length - 1 ? walkMinutes : null
+    };
+  });
 
   const confidence = worstConfidence(liveConnections.map((c) => c.confidence));
   const tightest = liveConnections.reduce<{ seconds: number | null; at: string | null }>(
@@ -311,6 +383,8 @@ export async function POST(req: NextRequest) {
     dataSource: sources.has("prediction") ? (sources.size > 1 ? "mixed" : "prediction") : "schedule",
     incomplete,
     notes,
+    legs: journeyLegs,
+    alerts,
     walkMinutes,
     whatIf: { departShiftMinutes, delayMinutes },
     directions,
