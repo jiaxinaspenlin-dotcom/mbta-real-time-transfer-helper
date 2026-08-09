@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import StationPicker from "@/components/StationPicker";
 
 const RouteMap = dynamic(() => import("@/components/RouteMap"), {
   ssr: false,
@@ -21,10 +22,12 @@ type Direction = {
   routeId: string | null;
   confidence: string | null;
   badge: string | null;
+  atIso: string | null;
 };
 
 type ConnectionOption = {
   departure: string | null;
+  departureIso: string | null;
   headsign: string | null;
   buffer: string | null;
   confidence: string | null;
@@ -41,7 +44,9 @@ type LiveConnection = {
   fromRouteId: string;
   toRouteId: string;
   arriveAt: string | null;
+  arriveIso: string | null;
   boardAfter: string | null;
+  boardAfterIso: string | null;
   walkMinutes: number;
   confidence: string | null;
   missedFirst: boolean;
@@ -56,8 +61,11 @@ type PlanResult = {
   transferWindow: string | null;
   tightestAt: string | null;
   departAt: string | null;
+  departIso: string | null;
   arriveAt: string | null;
+  arriveIso: string | null;
   duration: string | null;
+  generatedAt: string;
   nextDeparture: string | null;
   liveStatus: string | null;
   transferCount: number;
@@ -87,19 +95,46 @@ function confidenceClass(label: string | null) {
   return `conf conf-${label.toLowerCase()}`;
 }
 
+/** "in 4 min" beats "6:39 AM" when you are standing on the platform. */
+function countdown(iso: string | null, now: number) {
+  if (!iso) return null;
+  const seconds = Math.round((new Date(iso).getTime() - now) / 1000);
+  if (seconds < -90) return null;
+  if (seconds < 30) return "now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `in ${minutes} min`;
+  return `in ${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function agoLabel(iso: string | null, now: number) {
+  if (!iso) return null;
+  const seconds = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} min ago`;
+}
+
+const REFRESH_MS = 60_000;
+const TICK_MS = 10_000;
+
 export default function HomePage() {
   const [network, setNetwork] = useState<NetworkData | null>(null);
   const [networkError, setNetworkError] = useState<string | null>(null);
 
   const [originId, setOriginId] = useState("");
   const [destinationId, setDestinationId] = useState("");
+  // Commuters overwhelmingly want "now"; a fixed time is the exception.
+  const [leaveNow, setLeaveNow] = useState(true);
   const [departAt, setDepartAt] = useState(nowLocal);
+  const [now, setNow] = useState(() => Date.now());
   const [walkMinutes, setWalkMinutes] = useState(3);
   const [departShiftMinutes, setDepartShiftMinutes] = useState(0);
   const [delayMinutes, setDelayMinutes] = useState(0);
 
   const [result, setResult] = useState<PlanResult | null>(null);
   const [status, setStatus] = useState<"idle" | "loading">("idle");
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [assistOpen, setAssistOpen] = useState(false);
@@ -136,23 +171,16 @@ export default function HomePage() {
     [network]
   );
 
-  const stationOptions = useMemo(
-    () =>
-      (network?.stations ?? []).map((station) => ({
-        value: station.id,
-        label: `${station.name} · ${station.routeIds.map((id) => routeById[id]?.shortName ?? id).join("/")}`
-      })),
-    [network, routeById]
-  );
-
   const runPlan = useCallback(
-    async (overrides?: { departShiftMinutes?: number; delayMinutes?: number }) => {
+    async (overrides?: { departShiftMinutes?: number; delayMinutes?: number; silent?: boolean }) => {
       if (!originId || !destinationId) {
         setError("Choose where you are boarding and where you are heading.");
         return;
       }
       const id = ++requestId.current;
-      setStatus("loading");
+      // A background refresh must not make the button flicker every minute.
+      if (overrides?.silent) setRefreshing(true);
+      else setStatus("loading");
       setError(null);
 
       try {
@@ -160,9 +188,11 @@ export default function HomePage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            // Null lets the server use its own clock, which keeps auto-refresh
+            // meaningful instead of re-planning from a frozen timestamp.
             originId,
             destinationId,
-            departAt,
+            departAt: leaveNow ? null : departAt,
             walkMinutes,
             departShiftMinutes: overrides?.departShiftMinutes ?? departShiftMinutes,
             delayMinutes: overrides?.delayMinutes ?? delayMinutes
@@ -170,23 +200,41 @@ export default function HomePage() {
         });
         const json = await res.json();
         if (id !== requestId.current) return;
+        setStatus("idle");
+        setRefreshing(false);
         if (!res.ok) {
-          setStatus("idle");
           setError(json.error ?? "Unable to plan this trip.");
           return;
         }
         setResult(json);
-        setStatus("idle");
+        setNow(Date.now());
         if (!hasPlanned.current) setMobileView("trip");
         hasPlanned.current = true;
       } catch {
         if (id !== requestId.current) return;
         setStatus("idle");
+        setRefreshing(false);
         setError("Could not reach the planner. Check your connection and try again.");
       }
     },
-    [originId, destinationId, departAt, walkMinutes, departShiftMinutes, delayMinutes]
+    [originId, destinationId, leaveNow, departAt, walkMinutes, departShiftMinutes, delayMinutes]
   );
+
+  // Countdowns tick without refetching.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Live data goes stale fast, so refresh in the background while a trip is shown.
+  // Paused when the tab is hidden and when a fixed departure time is pinned.
+  useEffect(() => {
+    if (!result || !leaveNow) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void runPlan({ silent: true });
+    }, REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [result, leaveNow, runPlan]);
 
   // What-if knobs re-run the plan on their own once a trip exists.
   useEffect(() => {
@@ -299,15 +347,19 @@ export default function HomePage() {
       </header>
 
       <ol className="stepper" aria-label="How to use this planner">
-        <li className={step >= 1 ? "on" : ""}>
-          <b>1</b> Pick your stations
-        </li>
-        <li className={step >= 2 ? "on" : ""}>
-          <b>2</b> Plan the trip
-        </li>
-        <li className={step >= 3 ? "on" : ""}>
-          <b>3</b> Check your transfers
-        </li>
+        {(
+          [
+            ["Pick your stations", "Stations"],
+            ["Plan the trip", "Plan"],
+            ["Check your transfers", "Transfers"]
+          ] as Array<[string, string]>
+        ).map(([full, short], index) => (
+          <li key={full} className={step >= index + 1 ? "on" : ""}>
+            <b>{index + 1}</b>
+            <span className="stepFull">{full}</span>
+            <span className="stepShort">{short}</span>
+          </li>
+        ))}
       </ol>
 
       <div className="workspace">
@@ -320,36 +372,60 @@ export default function HomePage() {
               </button>
             </div>
 
-            <label className="field">
-              <span>Board at</span>
-              <select value={originId} onChange={(e) => setOriginId(e.target.value)}>
-                <option value="">Select a station…</option>
-                {stationOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <StationPicker
+              label="Board at"
+              value={originId}
+              stations={network.stations}
+              routeById={routeById}
+              onChange={setOriginId}
+            />
 
-            <label className="field">
-              <span>Head to</span>
-              <select value={destinationId} onChange={(e) => setDestinationId(e.target.value)}>
-                <option value="">Select a station…</option>
-                {stationOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <StationPicker
+              label="Head to"
+              value={destinationId}
+              stations={network.stations}
+              routeById={routeById}
+              onChange={setDestinationId}
+            />
 
-            <p className="hint">Tip: tap any station on the map to set it as your start or destination.</p>
+            <button type="button" className="assistTrigger" onClick={() => setAssistOpen(true)}>
+              <span aria-hidden>✦</span> Not sure which stop? Describe the place
+            </button>
 
-            <label className="field">
-              <span>Leaving at</span>
-              <input type="datetime-local" value={departAt} onChange={(e) => setDepartAt(e.target.value)} />
-            </label>
+            <p className="hint">Or tap any station on the map to set it as your start or destination.</p>
+
+            <div className="field">
+              <span>Leaving</span>
+              <div className="segmented" role="group" aria-label="Departure time">
+                <button
+                  type="button"
+                  className={leaveNow ? "on" : ""}
+                  aria-pressed={leaveNow}
+                  onClick={() => setLeaveNow(true)}
+                >
+                  Now
+                </button>
+                <button
+                  type="button"
+                  className={!leaveNow ? "on" : ""}
+                  aria-pressed={!leaveNow}
+                  onClick={() => {
+                    setDepartAt(nowLocal());
+                    setLeaveNow(false);
+                  }}
+                >
+                  At a time
+                </button>
+              </div>
+              {!leaveNow ? (
+                <input
+                  type="datetime-local"
+                  value={departAt}
+                  onChange={(e) => setDepartAt(e.target.value)}
+                  aria-label="Departure time"
+                />
+              ) : null}
+            </div>
 
             <div className="field">
               <span>
@@ -369,14 +445,13 @@ export default function HomePage() {
                 <span>15 min · taking it slow</span>
               </div>
               <p className="hint">
-                Set this to your own pace. The MBTA API does not publish platform walking distances, so this
-                number is yours, not an estimate we invented.
+                Your setting, not our estimate — the MBTA publishes no platform walking distances.
               </p>
             </div>
 
             {error ? <div className="errorBox">{error}</div> : null}
 
-            <div className="actions">
+            <div className="actions plannerActions">
               <button className="ghostButton" type="button" onClick={onReset}>
                 Reset
               </button>
@@ -472,9 +547,12 @@ export default function HomePage() {
                 </div>
 
                 <div className="metrics">
-                  <div>
+                  <div className="leadMetric">
                     <span>Depart</span>
                     <strong>{result.departAt ?? "—"}</strong>
+                    {countdown(result.departIso, now) ? (
+                      <em className="countdown">{countdown(result.departIso, now)}</em>
+                    ) : null}
                   </div>
                   <div>
                     <span>Arrive</span>
@@ -507,6 +585,11 @@ export default function HomePage() {
                   </span>
                   {result.liveStatus ? <span className="statusTag">{result.liveStatus}</span> : null}
                   {whatIfActive ? <span className="statusTag simTag">Simulated scenario</span> : null}
+                  {leaveNow ? (
+                    <span className={`statusTag liveTag${refreshing ? " pulsing" : ""}`}>
+                      <i className="liveDot" aria-hidden /> Updated {agoLabel(result.generatedAt, now)}
+                    </span>
+                  ) : null}
                 </div>
 
                 {result.notes.length ? (
@@ -552,7 +635,12 @@ export default function HomePage() {
                         <span>{direction.detail}</span>
                       </div>
                       <div className="stepMeta">
-                        {direction.badge ? <span className="badge">{direction.badge}</span> : null}
+                        {direction.badge ? (
+                          <span className="badge">
+                            {direction.badge}
+                            {countdown(direction.atIso, now) ? ` · ${countdown(direction.atIso, now)}` : ""}
+                          </span>
+                        ) : null}
                         {direction.confidence ? (
                           <span className={confidenceClass(direction.confidence)}>{direction.confidence}</span>
                         ) : null}
@@ -616,7 +704,12 @@ export default function HomePage() {
                                 }`}
                               >
                                 <div className="optionTime">
-                                  <strong>{option.departure ?? "—"}</strong>
+                                  <strong>
+                                    {option.departure ?? "—"}
+                                    {countdown(option.departureIso, now) ? (
+                                      <em className="countdown">{countdown(option.departureIso, now)}</em>
+                                    ) : null}
+                                  </strong>
                                   {option.headsign ? <span>toward {option.headsign}</span> : null}
                                 </div>
                                 <div className="optionMeta">
@@ -649,18 +742,10 @@ export default function HomePage() {
         </section>
       </div>
 
-      <button
-        type="button"
-        className={`assistLauncher${mobileView === "plan" || assistOpen ? " availableHere" : ""}`}
-        aria-label={assistOpen ? "Close station assist" : "Open station assist"}
-        aria-expanded={assistOpen}
-        onClick={() => setAssistOpen((open) => !open)}
-      >
-        {assistOpen ? "×" : "✦"}
-      </button>
-
       {assistOpen ? (
-        <div className="assistPanel" role="dialog" aria-label="Station assist">
+        <>
+          <div className="assistScrim" onClick={() => setAssistOpen(false)} aria-hidden />
+          <div className="assistPanel" role="dialog" aria-modal="true" aria-label="Station assist">
           <div className="cardHead">
             <h2>Find the right stop</h2>
             <button className="ghostButton" type="button" onClick={() => setAssistOpen(false)}>
@@ -709,7 +794,8 @@ export default function HomePage() {
               ))}
             </div>
           ) : null}
-        </div>
+          </div>
+        </>
       ) : null}
 
       <nav className="tabBar" aria-label="Sections">

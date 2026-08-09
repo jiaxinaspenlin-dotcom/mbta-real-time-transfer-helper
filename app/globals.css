@@ -142,6 +142,9 @@ h3 {
   margin: 0 auto;
   padding: 16px 16px 96px;
   display: grid;
+  /* minmax(0,1fr), not the implicit auto track: a grid item's min-content would
+     otherwise widen the track past the viewport and scroll the whole page. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -249,15 +252,21 @@ h3 {
   color: var(--accent-ink);
 }
 
+.stepShort {
+  display: none;
+}
+
 /* ---------- layout ---------- */
 
 .workspace {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
 .col {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-content: start;
   min-width: 0;
@@ -270,6 +279,7 @@ h3 {
   box-shadow: var(--shadow);
   padding: 16px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-content: start;
   min-width: 0;
@@ -335,6 +345,189 @@ h3 {
   justify-content: space-between;
   font-size: 11px;
   color: var(--muted);
+}
+
+/* ---------- station combobox ---------- */
+
+.stationField {
+  position: relative;
+}
+
+.combo {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: 10px;
+  padding-right: 8px;
+  overflow: hidden;
+}
+
+.combo.open {
+  border-color: var(--accent);
+}
+
+.combo input {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tap);
+  border: none;
+  background: none;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+
+.combo input:focus {
+  outline: none;
+}
+
+.combo input.hasValue::placeholder {
+  color: var(--text);
+  opacity: 1;
+}
+
+.comboChips {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.comboChips span {
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.comboChips .chipMore {
+  background: var(--neutral-bg);
+  color: var(--neutral-ink);
+}
+
+.comboList {
+  position: absolute;
+  z-index: 900;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin: 4px 0 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.22);
+}
+
+.comboList button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 40px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 14px;
+}
+
+.comboList button.active {
+  background: var(--surface-2);
+}
+
+.comboList button.chosen .comboName {
+  font-weight: 800;
+}
+
+.comboLines {
+  display: flex;
+  gap: 3px;
+  flex: none;
+}
+
+.comboLines i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.comboEmpty {
+  padding: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ---------- segmented control ---------- */
+
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 4px;
+}
+
+.segmented button {
+  min-height: 36px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.segmented button.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* ---------- countdown + liveness ---------- */
+
+.countdown {
+  display: block;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
+
+.leadMetric {
+  border-color: var(--accent) !important;
+}
+
+.liveTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.liveDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #16a34a;
+}
+
+.liveTag.pulsing .liveDot {
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
 }
 
 .actions {
@@ -820,38 +1013,48 @@ h3 {
 
 /* ---------- assist ---------- */
 
-.assistLauncher {
+/* A labelled inline button, not a floating mystery glyph: it says what it does
+   and cannot cover the primary action. */
+.assistTrigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--tap);
+  border: 1px dashed var(--line);
+  background: var(--surface-2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  text-align: left;
+}
+
+.assistScrim {
   position: fixed;
-  right: 16px;
-  bottom: 78px;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  border: none;
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-size: 24px;
-  font-weight: 900;
-  box-shadow: 0 12px 28px rgba(29, 78, 216, 0.35);
-  z-index: 1300;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  z-index: 1290;
 }
 
 .assistPanel {
   position: fixed;
-  right: 16px;
-  bottom: 144px;
-  width: min(400px, calc(100vw - 32px));
-  max-height: min(70vh, 560px);
+  z-index: 1300;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(80vh, 620px);
   overflow: auto;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.25);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35);
   padding: 16px;
   display: grid;
   gap: 10px;
   align-content: start;
-  z-index: 1300;
 }
 
 .suggestions {
@@ -963,13 +1166,6 @@ h3 {
     padding-bottom: 24px;
   }
 
-  .assistLauncher {
-    bottom: 20px;
-  }
-
-  .assistPanel {
-    bottom: 88px;
-  }
 }
 
 @media (min-width: 1360px) {
@@ -1010,16 +1206,65 @@ h3 {
     display: grid;
   }
 
+  /* Three full-width rows of static text pushed the actual controls below the
+     fold. One compact row of chips says the same thing. */
   .stepper {
-    grid-template-columns: 1fr;
-    gap: 6px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
   }
 
   .stepper li {
-    padding: 6px 12px;
+    padding: 5px 6px;
+    font-size: 11px;
+    gap: 5px;
+    justify-content: center;
+  }
+
+  .stepper li b {
+    width: 17px;
+    height: 17px;
+    font-size: 10px;
+  }
+
+  .stepFull {
+    display: none;
+  }
+
+  .stepShort {
+    display: inline;
+  }
+
+  /* Keep "Plan trip" reachable without scrolling the whole form. */
+  .colPlan .plannerActions {
+    position: sticky;
+    bottom: calc(60px + env(safe-area-inset-bottom));
+    z-index: 20;
+    background: var(--surface);
+    padding-top: 10px;
+    margin: 0 -14px -14px;
+    padding: 10px 14px 14px;
+    border-top: 1px solid var(--line);
+    border-radius: 0 0 var(--radius) var(--radius);
   }
 
   .brand p {
+    display: none;
+  }
+
+  /* Two wrapped rows of pills cost ~110px at the top of every screen. One
+     scrollable row keeps the colour key without pushing content down. */
+  .lineKey {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    /* Without min-width:0 a nowrap flex child expands its parent instead of
+       scrolling, which pushed the whole page into horizontal scroll. */
+    flex: 1 1 100%;
+    min-width: 0;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .lineKey::-webkit-scrollbar {
     display: none;
   }
 
@@ -1028,16 +1273,22 @@ h3 {
     min-height: 320px;
   }
 
-  /* On a phone the launcher would sit on top of trip content, so it only appears
-     on the tab where picking a station is what you are doing. */
-  .assistLauncher:not(.availableHere) {
-    display: none;
-  }
-
   /* The header already carries the full colour key, so the on-map copy would only
      crowd the zoom controls at this width. */
   .mapLegend {
     display: none;
+  }
+
+  /* Bottom sheet reads as native on a phone and keeps the keyboard clear. */
+  .assistPanel {
+    left: 0;
+    top: auto;
+    bottom: 0;
+    transform: none;
+    width: 100%;
+    max-height: 82vh;
+    border-radius: var(--radius) var(--radius) 0 0;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
   }
 
   .stepItem {
@@ -1055,10 +1306,6 @@ h3 {
 @media (max-width: 420px) {
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .actions {
-    grid-template-columns: 1fr;
   }
 
   .topBar {

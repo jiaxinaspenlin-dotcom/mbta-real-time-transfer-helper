@@ -154,6 +154,8 @@ export async function POST(req: NextRequest) {
 
   type ConnectionOption = {
     departure: string | null;
+    /** Raw timestamp so the client can count down without drifting. */
+    departureIso: string | null;
     headsign: string | null;
     buffer: string | null;
     confidence: string | null;
@@ -170,7 +172,9 @@ export async function POST(req: NextRequest) {
     fromRouteId: string;
     toRouteId: string;
     arriveAt: string | null;
+    arriveIso: string | null;
     boardAfter: string | null;
+    boardAfterIso: string | null;
     walkMinutes: number;
     confidence: string | null;
     missedFirst: boolean;
@@ -195,6 +199,7 @@ export async function POST(req: NextRequest) {
       const serves = Boolean(candidateArrival);
       return {
         departure: formatClock(departure.departureTime),
+        departureIso: departure.departureTime,
         headsign: departure.headsign,
         buffer: formatMinutes(score.seconds),
         confidence: serves ? score.label : null,
@@ -212,7 +217,9 @@ export async function POST(req: NextRequest) {
       fromRouteId: previous.routeId,
       toRouteId: current.routeId,
       arriveAt: formatClock(arrivalIso),
+      arriveIso: arrivalIso,
       boardAfter: formatClock(arrivalIso ? addMinutes(arrivalIso, walkMinutes) : null),
+      boardAfterIso: arrivalIso ? addMinutes(arrivalIso, walkMinutes) : null,
       walkMinutes,
       // Confidence describes the train the plan actually puts you on. Whether the
       // earlier ones were catchable is shown per option, so the headline and the
@@ -259,7 +266,8 @@ export async function POST(req: NextRequest) {
         detail: `Walk to the ${network.routeById[step.toRouteId]?.name ?? step.toRouteId} platform.`,
         routeId: null,
         confidence: connection?.confidence ?? null,
-        badge: `${walkMinutes} min walk`
+        badge: `${walkMinutes} min walk`,
+        atIso: null
       };
     }
 
@@ -276,7 +284,8 @@ export async function POST(req: NextRequest) {
       detail: `${step.ride.from.name} → ${step.ride.to.name} · ${stops} ${stops === 1 ? "stop" : "stops"}`,
       routeId: step.ride.routeId,
       confidence: null,
-      badge: formatClock(leg?.boarded?.departureTime ?? null)
+      badge: formatClock(leg?.boarded?.departureTime ?? null),
+      atIso: leg?.boarded?.departureTime ?? null
     };
   });
 
@@ -291,8 +300,11 @@ export async function POST(req: NextRequest) {
     transferWindow: formatMinutes(tightest.seconds),
     tightestAt: tightest.at,
     departAt: formatClock(departIso),
+    departIso,
     arriveAt: formatClock(arriveIso),
+    arriveIso,
     duration: formatDuration(departIso, arriveIso),
+    generatedAt: new Date().toISOString(),
     nextDeparture: formatClock(legs[1]?.boarded?.departureTime ?? departIso),
     liveStatus: firstLeg.boarded.status,
     transferCount: trip.rides.length - 1,
