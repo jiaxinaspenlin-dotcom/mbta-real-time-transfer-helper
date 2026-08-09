@@ -108,7 +108,9 @@ export default function NowCard({
     <div className="nowCard nowTransfer" style={{ borderLeftColor: accent }}>
       <div className="nowKicker">Transfer now</div>
       <h2>
-        Walk to the {leg.routeShortName} platform
+        {leg.walkBefore?.derived && leg.walkBefore.meters
+          ? `Walk ${leg.walkBefore.meters} m to ${leg.fromName}`
+          : `Walk to the ${leg.routeShortName} platform`}
         <span className="nowToward"> at {state.previous.toName}</span>
       </h2>
       <p>
@@ -120,7 +122,9 @@ export default function NowCard({
       </div>
       <div className="nowFoot">
         <span className="badge">Leaves {leg.boardAt}</span>
-        {connection ? <span className="badge">{connection.walkMinutes} min walk</span> : null}
+        <span className="badge">
+          {leg.walkBefore?.minutes ?? connection?.walkMinutes ?? 0} min walk
+        </span>
         {connection?.confidence ? (
           <span className={confidenceClass(connection.confidence)}>{connection.confidence}</span>
         ) : null}

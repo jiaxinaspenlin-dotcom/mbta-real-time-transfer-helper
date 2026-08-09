@@ -15,6 +15,7 @@ const RouteMap = dynamic(() => import("@/components/RouteMap"), {
 type LineRoute = { id: string; name: string; shortName: string; color: string; textColor: string };
 type Station = { id: string; name: string; lat: number; lon: number; routeIds: string[] };
 type Shape = { routeId: string; points: [number, number][] };
+type TripShape = { kind: "ride" | "walk"; routeId: string | null; color: string; points: [number, number][] };
 type NetworkData = { routes: LineRoute[]; stations: Station[]; geometry: Shape[] };
 
 type ServiceAlert = { id: string; header: string; effect: string; severity: number; routeNames: string[] };
@@ -42,6 +43,7 @@ type LiveConnection = {
   boardAfter: string | null;
   boardAfterIso: string | null;
   walkMinutes: number;
+  walkMeters: number | null;
   confidence: string | null;
   missedFirst: boolean;
   headsign: string | null;
@@ -72,7 +74,7 @@ type PlanResult = {
   rerouted: { reason: string } | null;
   walkMinutes: number;
   whatIf: { departShiftMinutes: number; delayMinutes: number };
-  geometry: Shape[];
+  geometry: TripShape[];
   markers: Array<{ kind: "board" | "transfer" | "arrive"; name: string; lat: number; lon: number }>;
   liveConnections: LiveConnection[];
 };

@@ -459,6 +459,22 @@ h3 {
   border-radius: 50%;
 }
 
+.comboBus {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--muted);
+  background: var(--neutral-bg);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
+.tlWalk {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+
 .comboEmpty {
   padding: 10px;
   font-size: 13px;

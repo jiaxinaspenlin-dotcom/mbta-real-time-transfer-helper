@@ -3,7 +3,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 type LineRoute = { id: string; shortName: string; color: string; textColor: string };
-type Station = { id: string; name: string; routeIds: string[] };
+type Station = { id: string; name: string; routeIds: string[]; mode?: "subway" | "bus" };
 
 /**
  * A filter-as-you-type combobox. The network has ~125 stations, which is far too
@@ -28,22 +28,59 @@ export default function StationPicker({
   const wrapRef = useRef<HTMLDivElement>(null);
   const listId = useId();
 
-  const selected = stations.find((station) => station.id === value) ?? null;
+  const [remote, setRemote] = useState<{ q: string; stops: Station[] } | null>(null);
+  const [resolved, setResolved] = useState<Station | null>(null);
+
+  const localMatch = stations.find((station) => station.id === value) ?? null;
+  const selected = localMatch ?? (resolved?.id === value ? resolved : null);
+
+  // A bus stop chosen by deep link is not in the preloaded subway list, so ask.
+  useEffect(() => {
+    if (!value || localMatch || resolved?.id === value) return;
+    let active = true;
+    fetch(`/api/stops?id=${encodeURIComponent(value)}`)
+      .then((res) => res.json())
+      .then((json) => {
+        if (active && json.stops?.[0]) setResolved(json.stops[0]);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [value, localMatch, resolved]);
+
+  // Search runs on the server: ~6,900 stops across subway and bus is far too many
+  // to ship to the browser.
+  useEffect(() => {
+    if (!open) return;
+    const q = query.trim();
+    let active = true;
+    const timer = setTimeout(() => {
+      fetch(`/api/stops?q=${encodeURIComponent(q)}`)
+        .then((res) => res.json())
+        .then((json) => {
+          if (active) setRemote({ q, stops: json.stops ?? [] });
+        })
+        .catch(() => active && setRemote({ q, stops: [] }));
+    }, q ? 160 : 0);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [query, open]);
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return stations;
-    // Prefer names that start with the query, so "north" surfaces North Station
-    // before Northeastern's neighbours.
-    const starts: Station[] = [];
-    const contains: Station[] = [];
-    for (const station of stations) {
-      const name = station.name.toLowerCase();
-      if (name.startsWith(q)) starts.push(station);
-      else if (name.includes(q)) contains.push(station);
-    }
-    return [...starts, ...contains];
-  }, [stations, query]);
+    // Show subway matches instantly from the preloaded list, then let the server
+    // results (which include bus) fill in behind them.
+    const local = q
+      ? stations.filter((station) => station.name.toLowerCase().includes(q))
+      : stations;
+    // Ignore results from a previous keystroke, or the list flashes stale stops.
+    if (!remote || remote.q !== query.trim()) return local;
+    const seen = new Set(local.map((station) => station.id));
+    return [...local, ...remote.stops.filter((station) => !seen.has(station.id))];
+  }, [stations, query, remote]);
 
   useEffect(() => {
     if (!open) return;
@@ -113,7 +150,7 @@ export default function StationPicker({
           // Cap the chips: interchanges like North Station serve enough lines to
           // overflow the field and spill outside the card.
           <div className="comboChips" aria-hidden>
-            {selected.routeIds.slice(0, 2).map((routeId) => (
+            {selected.routeIds.filter((id) => routeById[id]).slice(0, 2).map((routeId) => (
               <span
                 key={routeId}
                 style={{ background: routeById[routeId]?.color, color: routeById[routeId]?.textColor }}
@@ -121,8 +158,9 @@ export default function StationPicker({
                 {routeById[routeId]?.shortName ?? routeId}
               </span>
             ))}
-            {selected.routeIds.length > 2 ? (
-              <span className="chipMore">+{selected.routeIds.length - 2}</span>
+            {selected.mode === "bus" ? <span className="chipMore">Bus</span> : null}
+            {selected.routeIds.filter((id) => routeById[id]).length > 2 ? (
+              <span className="chipMore">+{selected.routeIds.filter((id) => routeById[id]).length - 2}</span>
             ) : null}
           </div>
         ) : null}
@@ -144,15 +182,20 @@ export default function StationPicker({
                 >
                   <span className="comboName">{station.name}</span>
                   <span className="comboLines">
-                    {station.routeIds.map((routeId) => (
-                      <i key={routeId} style={{ background: routeById[routeId]?.color }} />
-                    ))}
+                    {station.mode === "bus" ? <em className="comboBus">Bus</em> : null}
+                    {station.routeIds
+                      .filter((routeId) => routeById[routeId])
+                      .map((routeId) => (
+                        <i key={routeId} style={{ background: routeById[routeId].color }} />
+                      ))}
                   </span>
                 </button>
               </li>
             ))
           ) : (
-            <li className="comboEmpty">No station matches “{query}”.</li>
+            <li className="comboEmpty">
+              {remote && remote.q === query.trim() ? `No stop matches “${query}”.` : "Searching…"}
+            </li>
           )}
         </ul>
       ) : null}

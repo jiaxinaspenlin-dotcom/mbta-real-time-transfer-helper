@@ -33,6 +33,13 @@ function describeDisruption(alert: ServiceAlert, network: Network) {
   return `${grouped.join(" / ")} ${effect}`;
 }
 
+/** Bus long names are route descriptions ("Central Square - Broadway Station"), so
+ *  buses read better by number. */
+function routeLabel(route: { mode: string; name: string; shortName: string } | undefined, fallback: string) {
+  if (!route) return fallback;
+  return route.mode === "bus" ? `Bus ${route.shortName}` : route.name;
+}
+
 function describeAlert(alert: ServiceAlert, network: Network) {
   return {
     id: alert.id,
@@ -57,6 +64,10 @@ type Leg = {
   boarded: Departure | null;
   arrivalIso: string | null;
   candidates: Candidate[];
+  /** Minutes of walking before this leg: the rider's setting inside a station, or
+   *  a real distance-derived figure when the transfer is between separate stops. */
+  walkBeforeMinutes: number;
+  walkBeforeMeters: number | null;
 };
 
 export async function POST(req: NextRequest) {
@@ -174,8 +185,21 @@ export async function POST(req: NextRequest) {
   let cursorIso = requestedIso;
 
   {
-    for (let i = 0; i < candidateTrip.rides.length; i += 1) {
-      const ride = candidateTrip.rides[i];
+    let pendingWalkMinutes = 0;
+    let pendingWalkMeters: number | null = null;
+
+    for (let segmentIndex = 0; segmentIndex < candidateTrip.segments.length; segmentIndex += 1) {
+      const segment = candidateTrip.segments[segmentIndex];
+
+      // A walk between separate stops just consumes time before the next boarding.
+      if (segment.kind === "walk") {
+        pendingWalkMinutes += segment.walk.minutes;
+        pendingWalkMeters = (pendingWalkMeters ?? 0) + segment.walk.meters;
+        continue;
+      }
+
+      const ride = segment.ride;
+      const i = legs.length;
       const routeName = network.routeById[ride.routeId]?.name ?? ride.routeId;
       const departures = await fetchDepartures({
         stationId: ride.from.id,
@@ -203,8 +227,10 @@ export async function POST(req: NextRequest) {
         return { departure, arrivalIso: usable };
       });
 
-      // On a transfer you can only board something that leaves after you finish walking.
-      const earliestBoardIso = i === 0 ? cursorIso : addMinutes(cursorIso, walkMinutes);
+      // On a transfer you can only board something that leaves after you finish
+      // walking — whether that walk is between platforms or between street stops.
+      const walkBefore = i === 0 ? 0 : pendingWalkMinutes || walkMinutes;
+      const earliestBoardIso = addMinutes(cursorIso, walkBefore);
       const chosen =
         candidates.find(
           (candidate) =>
@@ -230,7 +256,18 @@ export async function POST(req: NextRequest) {
         arrivalIso = addMinutes(arrivalIso, delayMinutes);
       }
 
-      legs.push({ routeId: ride.routeId, fromId: ride.from.id, toId: ride.to.id, boarded, arrivalIso, candidates });
+      legs.push({
+        routeId: ride.routeId,
+        fromId: ride.from.id,
+        toId: ride.to.id,
+        boarded,
+        arrivalIso,
+        candidates,
+        walkBeforeMinutes: walkBefore,
+        walkBeforeMeters: pendingWalkMeters
+      });
+      pendingWalkMinutes = 0;
+      pendingWalkMeters = null;
 
       if (!arrivalIso) break;
       cursorIso = arrivalIso;
@@ -315,6 +352,7 @@ export async function POST(req: NextRequest) {
     boardAfter: string | null;
     boardAfterIso: string | null;
     walkMinutes: number;
+    walkMeters: number | null;
     confidence: string | null;
     missedFirst: boolean;
     headsign: string | null;
@@ -329,13 +367,15 @@ export async function POST(req: NextRequest) {
     const arrivalIso = previous.arrivalIso;
 
     const destinationName = network.stationById[current.toId].name;
+    // Per-leg: a street transfer has a real distance, an in-station one uses the setting.
+    const legWalkMinutes = current.walkBeforeMinutes;
     // Always show through the train the rider actually boards, so the trains they
     // must let pass are visible rather than silently cut off.
     const boardIndex = current.candidates.findIndex((candidate) => candidate.departure === current.boarded);
     const shown = current.candidates.slice(0, Math.min(6, boardIndex >= 0 ? Math.max(boardIndex + 1, 3) : 4));
 
     const options = shown.map(({ departure, arrivalIso: candidateArrival }) => {
-      const score = scoreTransfer({ arrivalIso, departureIso: departure.departureTime, walkMinutes });
+      const score = scoreTransfer({ arrivalIso, departureIso: departure.departureTime, walkMinutes: legWalkMinutes });
       const serves = Boolean(candidateArrival);
       return {
         departure: formatClock(departure.departureTime),
@@ -358,9 +398,10 @@ export async function POST(req: NextRequest) {
       toRouteId: current.routeId,
       arriveAt: formatClock(arrivalIso),
       arriveIso: arrivalIso,
-      boardAfter: formatClock(arrivalIso ? addMinutes(arrivalIso, walkMinutes) : null),
-      boardAfterIso: arrivalIso ? addMinutes(arrivalIso, walkMinutes) : null,
-      walkMinutes,
+      boardAfter: formatClock(arrivalIso ? addMinutes(arrivalIso, legWalkMinutes) : null),
+      boardAfterIso: arrivalIso ? addMinutes(arrivalIso, legWalkMinutes) : null,
+      walkMinutes: legWalkMinutes,
+      walkMeters: current.walkBeforeMeters,
       // Confidence describes the train the plan actually puts you on. Whether the
       // earlier ones were catchable is shown per option, so the headline and the
       // itinerary never contradict each other.
@@ -378,11 +419,12 @@ export async function POST(req: NextRequest) {
         const spare = scoreTransfer({
           arrivalIso,
           departureIso: current.boarded?.departureTime,
-          walkMinutes
+          walkMinutes: legWalkMinutes
         });
         if (spare.seconds === null) return null;
         const mins = Math.floor(Math.abs(spare.seconds) / 60);
-        return `You arrive ${formatClock(arrivalIso)}, walk ${walkMinutes} min, and it leaves ${boarding.departure} — ${mins} min to spare.`;
+        const how = current.walkBeforeMeters !== null ? `walk ${current.walkBeforeMeters} m (${legWalkMinutes} min)` : `walk ${legWalkMinutes} min`;
+        return `You arrive ${formatClock(arrivalIso)}, ${how}, and it leaves ${boarding.departure} — ${mins} min to spare.`;
       })(),
       options
     });
@@ -393,10 +435,20 @@ export async function POST(req: NextRequest) {
   const journeyLegs = legs.map((leg, index) => {
     const ride = trip.rides[index];
     const route = network.routeById[leg.routeId];
+    const walkBefore =
+      index === 0
+        ? null
+        : {
+            minutes: leg.walkBeforeMinutes,
+            meters: leg.walkBeforeMeters,
+            // Street walks come from real coordinates; in-station ones are the
+            // rider's own setting, because platforms share a single coordinate.
+            derived: leg.walkBeforeMeters !== null
+          };
     return {
       index,
       routeId: leg.routeId,
-      routeName: route?.name ?? leg.routeId,
+      routeName: routeLabel(route, leg.routeId),
       routeShortName: route?.shortName ?? leg.routeId,
       routeColor: route?.color ?? "#64748b",
       fromName: network.stationById[leg.fromId].name,
@@ -406,8 +458,10 @@ export async function POST(req: NextRequest) {
       arriveIso: leg.arrivalIso,
       boardAt: formatClock(leg.boarded?.departureTime ?? null),
       arriveAt: formatClock(leg.arrivalIso),
+      mode: route?.mode ?? "subway",
       stops: Math.max(1, ride.stations.length - 1),
-      walkMinutesAfter: index < legs.length - 1 ? walkMinutes : null
+      walkBefore,
+      walkMinutesAfter: legs[index + 1]?.walkBeforeMinutes ?? null
     };
   });
 
@@ -417,7 +471,7 @@ export async function POST(req: NextRequest) {
       const score = scoreTransfer({
         arrivalIso: legs[index].arrivalIso,
         departureIso: legs[index + 1]?.boarded?.departureTime,
-        walkMinutes
+        walkMinutes: legs[index + 1]?.walkBeforeMinutes ?? walkMinutes
       });
       if (score.seconds === null) return acc;
       if (acc.seconds === null || score.seconds < acc.seconds) {
@@ -433,38 +487,6 @@ export async function POST(req: NextRequest) {
   const departIso = firstLeg.boarded.departureTime!;
   const incomplete = legs.length < trip.rides.length || legs.some((leg) => !leg.boarded || !leg.arrivalIso);
 
-  const directions = trip.steps.map((step, index) => {
-    if (step.kind === "transfer") {
-      const connection = liveConnections.find((c) => c.transferAt === step.station.name);
-      return {
-        id: `transfer-${index}`,
-        kind: "transfer" as const,
-        title: `Transfer at ${step.station.name}`,
-        detail: `Walk to the ${network.routeById[step.toRouteId]?.name ?? step.toRouteId} platform.`,
-        routeId: null,
-        confidence: connection?.confidence ?? null,
-        badge: `${walkMinutes} min walk`,
-        atIso: null
-      };
-    }
-
-    const legIndex = trip.rides.indexOf(step.ride);
-    const leg = legs[legIndex];
-    const route = network.routeById[step.ride.routeId];
-    const stops = Math.max(1, step.ride.stations.length - 1);
-    const headsign = leg?.boarded?.headsign;
-
-    return {
-      id: `ride-${index}`,
-      kind: "ride" as const,
-      title: headsign ? `${route?.name ?? step.ride.routeId} toward ${headsign}` : `Board the ${route?.name ?? step.ride.routeId}`,
-      detail: `${step.ride.from.name} → ${step.ride.to.name} · ${stops} ${stops === 1 ? "stop" : "stops"}`,
-      routeId: step.ride.routeId,
-      confidence: null,
-      badge: formatClock(leg?.boarded?.departureTime ?? null),
-      atIso: leg?.boarded?.departureTime ?? null
-    };
-  });
 
   const sources = new Set(legs.flatMap((leg) => (leg.boarded ? [leg.boarded.source] : [])));
 
@@ -493,11 +515,26 @@ export async function POST(req: NextRequest) {
     rerouted,
     walkMinutes,
     whatIf: { departShiftMinutes, delayMinutes },
-    directions,
-    geometry: trip.rides.map((ride) => ({
-      routeId: ride.routeId,
-      points: ride.stations.map((station) => [station.lat, station.lon] as [number, number])
-    })),
+    // Colour travels with the shape: the client only holds the subway palette, and
+    // a trip can now include any of 149 bus routes.
+    geometry: trip.segments.map((segment) =>
+      segment.kind === "ride"
+        ? {
+            kind: "ride" as const,
+            routeId: segment.ride.routeId,
+            color: network.routeById[segment.ride.routeId]?.color ?? "#64748b",
+            points: segment.ride.stations.map((station) => [station.lat, station.lon] as [number, number])
+          }
+        : {
+            kind: "walk" as const,
+            routeId: null,
+            color: "#64748b",
+            points: [
+              [segment.walk.from.lat, segment.walk.from.lon] as [number, number],
+              [segment.walk.to.lat, segment.walk.to.lon] as [number, number]
+            ]
+          }
+    ),
     markers: [
       { kind: "board" as const, name: trip.origin.name, lat: trip.origin.lat, lon: trip.origin.lon },
       ...trip.steps

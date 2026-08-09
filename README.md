@@ -1,8 +1,8 @@
 # MBTA Transfer Helper
 
-A real-time transfer planner for the MBTA rapid transit network: plan a trip, see
-whether you will actually make each connection, and simulate what happens if you
-leave late or your train runs behind.
+A real-time multimodal transfer planner for the MBTA — subway, bus and the short
+walks between them. Plan a trip, see whether you will actually make each
+connection, and simulate what happens if you leave late or your train runs behind.
 
 ## Data policy
 
@@ -15,11 +15,15 @@ When the API cannot answer, the app says so — an unreachable network shows an 
 screen, a leg with no reported service is named in a "Gaps in the MBTA feed" panel,
 and missing times render as `—`. Nothing is filled in with an estimate.
 
-There is one deliberate exception, and the UI states it inline: **your
-platform-to-platform walk time is a control you set, not a value the app derives.**
-The MBTA API returns identical coordinates for every platform at a station (all
-eight Park Street platforms share one point) and publishes no transfer times, so any
-per-station walking estimate would be invented.
+Walking time is handled two different ways, because the data supports one and not
+the other:
+
+- **Between separate stops** (a bus stop to a station entrance) the coordinates are
+  genuinely distinct, so the distance is real and the app shows it: *walk 114 m to
+  Park Street (1 min)*.
+- **Between platforms inside one station** the API returns identical coordinates for
+  every platform — all eight at Park Street share a single point — and publishes no
+  transfer times. So that number is a control you set, and the UI says so.
 
 ## The flow
 
@@ -50,7 +54,10 @@ walk-time and what-if controls only appear once there is an answer to refine.
   These are also returned when a leg has no service, so a dead end explains itself.
 - **Rerouting** — the planner routes around whatever is out of service. During a
   Green Line suspension, Park Street → Government Center (normally one stop) is
-  replanned as Red → Orange → Blue, with a banner saying why.
+  replanned via other lines, with a banner saying why.
+- **Subway, bus and walking** — 8 subway routes and 149 bus routes in one graph,
+  joined by walking links between stops within 400 m. A trip can be Bus SL5, a
+  114 m walk, then the Red Line.
 - **Transfer guidance** — set your own walk time (1–15 min); every connection is
   scored against it. A tight connection offers to retry at a faster pace.
 - **Shareable links** — the trip lives in the URL (`?from=…&to=…&walk=…`), so it can
@@ -120,12 +127,19 @@ variables in its environment settings — `.env.local` is intentionally not comm
 
 ### Trip planning
 
-1. The network is loaded once from `/routes` (types 0 and 1: light and heavy rail,
-   which is Red, Mattapan, Orange, Green B/C/D/E and Blue) plus one
-   `/route_patterns?canonical=true` call that returns the ordered stops of every
-   branch. That yields ~125 stations and a branch-aware graph.
-2. A shortest-path search over that graph minimises transfers first, then number of
-   stops, and groups the result into rides and transfers. Anything a disabling alert
+1. The network is loaded once and cached: 8 subway routes via
+   `/route_patterns?canonical=true`, and 149 bus routes in batches of 25. Bus routes
+   carry no canonical flag, so their "typical" patterns are used instead. That is
+   ~6,900 stops and ~11,000 directed edges, built in about 1.3 seconds cold and
+   served from memory afterwards.
+   Stops within 400 m of each other are then linked by walking edges — bucketed into
+   a coarse grid, since comparing all stops pairwise would be 47 million checks.
+   These walk links are what make bus/subway transfers possible.
+2. A binary-heap Dijkstra over that graph, weighted in rough minutes with a boarding
+   penalty per mode (buses cost more to board, which is what stops it suggesting six
+   buses to save one transfer). **These costs only rank candidate routes — every
+   time shown to a rider still comes from a real prediction.** The result is grouped
+   into rides and walks. Anything a disabling alert
    covers is removed from the graph first, keyed by `routeId|stationId` so a
    suspension takes out one line's edges at a station rather than the station
    itself. If the feed then dries up for a reason no alert covers, the planner
@@ -148,7 +162,8 @@ variables in its environment settings — `.env.local` is intentionally not comm
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/network` | Routes, stations and line shapes for the map and pickers |
+| `GET /api/network` | Subway routes, stations and line shapes for the map. Deliberately excludes bus: ~6,800 extra stops would swamp both the payload and Leaflet |
+| `GET /api/stops?q=` | Stop search across subway and bus, filtered server-side. `?id=` resolves ids for deep links |
 | `POST /api/plan` | Plans a trip; body takes `originId`, `destinationId`, `departAt`, `walkMinutes`, `departShiftMinutes`, `delayMinutes`. Returns formatted strings **and** raw ISO timestamps, which is what lets the client count down and track the journey without refetching |
 | `POST /api/station-assist` | Plain-language destination → station suggestions |
 
@@ -189,14 +204,15 @@ lib/
 
 ## Known limitations
 
-- **Rapid transit only.** Commuter rail, bus, ferry and the Silver Line are not
-  included, since the planner loads route types 0 and 1.
+- **No commuter rail or ferry.** The planner loads route types 0, 1 and 3.
 - **Walk time is your input**, for the reason described above.
 - **Early morning and late night** have sparse predictions. The app falls back to
   the timetable where it can and reports the gap where it cannot, rather than
   showing times that do not exist.
-- **Rerouting is subway-only.** The MBTA's replacement shuttle buses are not in the
-  graph, so when every rail path is blocked the app says there is no way around
-  rather than inventing one.
+- **Replacement shuttles are not routable.** The MBTA publishes them in alert text
+  rather than as routes in the API, so a suspension is routed around using regular
+  bus and subway service, or reported as impassable.
+- **Walking links are straight-line**, not street-network distances, so a walk
+  across a river or rail cut reads shorter than it walks.
 - **Journey tracking is time-based, not location-based.** It advances on the clock,
   so it assumes you boarded the train it put you on.

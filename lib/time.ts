@@ -39,7 +39,10 @@ export type JourneyLeg = {
   arriveIso: string | null;
   boardAt: string | null;
   arriveAt: string | null;
+  mode: "subway" | "bus";
   stops: number;
+  /** Null on the first leg. `derived` means it came from real coordinates. */
+  walkBefore: { minutes: number; meters: number | null; derived: boolean } | null;
   walkMinutesAfter: number | null;
 };
 

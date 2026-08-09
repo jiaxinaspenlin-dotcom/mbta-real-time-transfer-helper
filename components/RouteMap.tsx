@@ -7,6 +7,8 @@ import L from "leaflet";
 type LineRoute = { id: string; name: string; shortName: string; color: string };
 type Station = { id: string; name: string; lat: number; lon: number; routeIds: string[] };
 type Shape = { routeId: string; points: [number, number][] };
+/** Trip shapes carry their own colour, since a bus route's palette is not preloaded. */
+type TripShape = { kind?: "ride" | "walk"; routeId: string | null; color?: string; points: [number, number][] };
 type TripMarker = { kind: "board" | "transfer" | "arrive"; name: string; lat: number; lon: number };
 
 const MARKER_COLORS: Record<TripMarker["kind"], string> = {
@@ -78,7 +80,7 @@ export default function RouteMap({
   routes: LineRoute[];
   network: Shape[];
   stations: Station[];
-  trip: Shape[];
+  trip: TripShape[];
   markers: TripMarker[];
   originId: string;
   destinationId: string;
@@ -120,7 +122,11 @@ export default function RouteMap({
           <Polyline
             key={`trip-${idx}`}
             positions={shape.points}
-            pathOptions={{ color: colorOf(shape.routeId), weight: 8, opacity: 1 }}
+            pathOptions={
+              shape.kind === "walk"
+                ? { color: shape.color ?? "#64748b", weight: 5, opacity: 0.9, dashArray: "2 9", lineCap: "round" }
+                : { color: shape.color ?? colorOf(shape.routeId ?? ""), weight: 8, opacity: 1 }
+            }
           />
         ))}
 

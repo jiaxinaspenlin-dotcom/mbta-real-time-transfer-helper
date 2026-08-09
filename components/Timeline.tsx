@@ -58,7 +58,9 @@ export default function Timeline({
             <div className={`tlRide${isActive ? " active" : ""}`}>
               <span className="tlBar" style={{ height, background: leg.routeColor }} />
               <div className="tlRideMeta">
-                <strong style={{ color: leg.routeColor }}>{leg.routeShortName}</strong>
+                <strong style={{ color: leg.routeColor }}>
+                  {leg.mode === "bus" ? `Bus ${leg.routeShortName}` : leg.routeShortName}
+                </strong>
                 <span>
                   {leg.stops} {leg.stops === 1 ? "stop" : "stops"}
                   {rideMinutes !== null ? ` · ${rideMinutes} min` : ""}
@@ -76,6 +78,11 @@ export default function Timeline({
                     Arrive {leg.arriveAt ?? "—"} · leave {next.boardAt ?? "—"}
                     {waitMinutes !== null ? ` (${waitMinutes} min)` : ""}
                   </span>
+                  {next.walkBefore?.derived && next.walkBefore.meters ? (
+                    <span className="tlWalk">
+                      ↳ walk {next.walkBefore.meters} m to {next.fromName} ({next.walkBefore.minutes} min)
+                    </span>
+                  ) : null}
                 </div>
                 {connection?.confidence ? (
                   <span className={`conf conf-${connection.confidence.toLowerCase()}`}>
