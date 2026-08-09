@@ -329,8 +329,16 @@ export default function HomePage() {
     <main className="app">
       <header className="topBar">
         <div className="brand">
+          {/* Two routes meeting at a station node: the transfer this app is about. */}
           <span className="brandMark" aria-hidden>
-            T
+            <svg viewBox="0 0 64 64" focusable="false">
+              <rect width="64" height="64" rx="14" fill="#101c2e" />
+              <path d="M32 23V45" stroke="#ffffff" strokeWidth="4.5" strokeLinecap="round" opacity="0.55" />
+              <path d="M9 23h46" stroke="#ED8B00" strokeWidth="9" strokeLinecap="round" />
+              <path d="M9 45h46" stroke="#DA291C" strokeWidth="9" strokeLinecap="round" />
+              <circle cx="32" cy="23" r="5.5" fill="#ffffff" />
+              <circle cx="32" cy="45" r="5.5" fill="#ffffff" />
+            </svg>
           </span>
           <div>
             <h1>MBTA Transfer Helper</h1>
