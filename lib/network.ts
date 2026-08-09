@@ -188,10 +188,42 @@ export type PlannedTrip = {
   steps: TripStep[];
 };
 
+/**
+ * Parts of the network that are out of service. `routeStops` is keyed by
+ * `routeId|stationId` because a suspension usually covers a segment of one line,
+ * not the whole line, and certainly not the station for every other line there.
+ */
+export type Avoid = {
+  routes: Set<string>;
+  stations: Set<string>;
+  routeStops: Set<string>;
+};
+
+export function emptyAvoid(): Avoid {
+  return { routes: new Set(), stations: new Set(), routeStops: new Set() };
+}
+
+function edgeBlocked(avoid: Avoid | undefined, routeId: string, from: string, to: string) {
+  if (!avoid) return false;
+  if (avoid.routes.has(routeId)) return true;
+  if (avoid.stations.has(from) || avoid.stations.has(to)) return true;
+  return avoid.routeStops.has(`${routeId}|${from}`) || avoid.routeStops.has(`${routeId}|${to}`);
+}
+
+/** Whether a planned trip touches anything currently out of service. */
+export function tripUsesBlocked(trip: PlannedTrip, avoid: Avoid) {
+  return trip.rides.some((ride) => {
+    if (avoid.routes.has(ride.routeId)) return true;
+    return ride.stations.some(
+      (station) => avoid.stations.has(station.id) || avoid.routeStops.has(`${ride.routeId}|${station.id}`)
+    );
+  });
+}
+
 const TRANSFER_PENALTY = 1000;
 
 /** Least-transfers-then-fewest-stops search over the live network graph. */
-function searchPath(network: Network, originId: string, destinationId: string) {
+function searchPath(network: Network, originId: string, destinationId: string, avoid?: Avoid) {
   type State = { station: string; routeId: string };
   const keyOf = (s: State) => `${s.station}|${s.routeId}`;
 
@@ -199,7 +231,9 @@ function searchPath(network: Network, originId: string, destinationId: string) {
   const prev = new Map<string, { key: string; state: State } | null>();
   const states = new Map<string, State>();
 
-  const startEdges = network.adjacency.get(originId) ?? [];
+  const startEdges = (network.adjacency.get(originId) ?? []).filter(
+    (edge) => !edgeBlocked(avoid, edge.routeId, originId, edge.to)
+  );
   for (const edge of startEdges) {
     const state = { station: originId, routeId: edge.routeId };
     const key = keyOf(state);
@@ -232,6 +266,7 @@ function searchPath(network: Network, originId: string, destinationId: string) {
     }
 
     for (const edge of network.adjacency.get(state.station) ?? []) {
+      if (edgeBlocked(avoid, edge.routeId, state.station, edge.to)) continue;
       const next: State = { station: edge.to, routeId: edge.routeId };
       const nextKey = keyOf(next);
       const cost = currentCost + 1 + (edge.routeId === state.routeId ? 0 : TRANSFER_PENALTY);
@@ -276,11 +311,17 @@ function stationsBetween(network: Network, routeId: string, fromId: string, toId
   return [network.stationById[fromId], network.stationById[toId]];
 }
 
-export function planTrip(network: Network, originId: string, destinationId: string): PlannedTrip | null {
+export function planTrip(
+  network: Network,
+  originId: string,
+  destinationId: string,
+  avoid?: Avoid
+): PlannedTrip | null {
   if (originId === destinationId) return null;
   if (!network.stationById[originId] || !network.stationById[destinationId]) return null;
+  if (avoid?.stations.has(originId) || avoid?.stations.has(destinationId)) return null;
 
-  const chain = searchPath(network, originId, destinationId);
+  const chain = searchPath(network, originId, destinationId, avoid);
   if (!chain || chain.length < 2) return null;
 
   const rides: Ride[] = [];

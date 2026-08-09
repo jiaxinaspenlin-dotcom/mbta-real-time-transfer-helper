@@ -1,4 +1,5 @@
 import { bostonDateParts, mbtaFetch } from "./mbta-api";
+import { Avoid, emptyAvoid } from "./network";
 import type { Network } from "./network";
 
 export type Departure = {
@@ -143,9 +144,18 @@ export type ServiceAlert = {
   severity: number;
   routeIds: string[];
   stationIds: string[];
+  /** Route/stop pairs kept together: a suspension hits one line at a station, not all of them. */
+  entities: Array<{ routeId: string | null; stationId: string | null }>;
   /** True when the alert covers a whole route rather than named stops. */
   wholeRoute: boolean;
 };
+
+/** Effects that mean trains are not running, as opposed to running badly. */
+const DISABLING_EFFECTS = new Set(["SUSPENSION", "STATION_CLOSURE", "NO_SERVICE", "SHUTTLE"]);
+
+export function isDisabling(effect: string) {
+  return DISABLING_EFFECTS.has(effect);
+}
 
 const ALERT_TTL = 60;
 
@@ -162,15 +172,19 @@ export async function fetchAlerts(network: Network, routeIds: string[]): Promise
   );
 
   return (payload?.data ?? []).map((item: any) => {
-    const entities: any[] = item.attributes?.informed_entity ?? [];
+    const rawEntities: any[] = item.attributes?.informed_entity ?? [];
     const alertRoutes = new Set<string>();
     const stationIds = new Set<string>();
+    const entities: ServiceAlert["entities"] = [];
     let wholeRoute = false;
 
-    for (const entity of entities) {
-      if (entity.route) alertRoutes.add(entity.route);
-      if (entity.stop) stationIds.add(network.platformToStation[entity.stop] ?? entity.stop);
-      else if (entity.route) wholeRoute = true;
+    for (const entity of rawEntities) {
+      const stationId = entity.stop ? (network.platformToStation[entity.stop] ?? entity.stop) : null;
+      const routeId = entity.route ?? null;
+      if (routeId) alertRoutes.add(routeId);
+      if (stationId) stationIds.add(stationId);
+      else if (routeId) wholeRoute = true;
+      entities.push({ routeId, stationId });
     }
 
     return {
@@ -180,9 +194,32 @@ export async function fetchAlerts(network: Network, routeIds: string[]): Promise
       severity: item.attributes?.severity ?? 0,
       routeIds: [...alertRoutes],
       stationIds: [...stationIds],
+      entities,
       wholeRoute
     } as ServiceAlert;
   });
+}
+
+/**
+ * Turn alerts into a set the planner can route around. A station closure takes the
+ * station out entirely; a line suspension only takes out that line's edges there,
+ * so other lines through the same station stay usable.
+ */
+export function blockedFromAlerts(alerts: ServiceAlert[]): Avoid {
+  const avoid = emptyAvoid();
+  for (const alert of alerts) {
+    if (!isDisabling(alert.effect)) continue;
+    for (const entity of alert.entities) {
+      if (alert.effect === "STATION_CLOSURE" && entity.stationId) {
+        avoid.stations.add(entity.stationId);
+      } else if (entity.routeId && entity.stationId) {
+        avoid.routeStops.add(`${entity.routeId}|${entity.stationId}`);
+      } else if (entity.routeId) {
+        avoid.routes.add(entity.routeId);
+      }
+    }
+  }
+  return avoid;
 }
 
 export function formatClock(iso?: string | null) {

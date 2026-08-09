@@ -1,23 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   Departure,
+  ServiceAlert,
   addMinutes,
+  blockedFromAlerts,
   fetchAlerts,
   fetchDepartures,
   fetchTripArrivals,
   formatClock,
   formatDuration,
   formatMinutes,
+  isDisabling,
   scoreTransfer,
   worstConfidence
 } from "@/lib/mbta";
 import { MbtaApiError } from "@/lib/mbta-api";
-import { loadNetwork, planTrip } from "@/lib/network";
+import { Network, PlannedTrip, emptyAvoid, loadNetwork, planTrip, tripUsesBlocked } from "@/lib/network";
 
 function clamp(value: unknown, min: number, max: number, fallback: number) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+/** "Green Line suspension" reads better than "Green C, Green D, Green E, Green B suspension". */
+function describeDisruption(alert: ServiceAlert, network: Network) {
+  const names = Array.from(
+    new Set(alert.routeIds.map((id) => network.routeById[id]?.shortName ?? id))
+  ).sort();
+  const grouped = names.every((name) => name.startsWith("Green")) && names.length > 1 ? ["Green Line"] : names;
+  const effect = alert.effect.toLowerCase().replace(/_/g, " ");
+  return `${grouped.join(" / ")} ${effect}`;
+}
+
+function describeAlert(alert: ServiceAlert, network: Network) {
+  return {
+    id: alert.id,
+    header: alert.header,
+    effect: alert.effect,
+    severity: alert.severity,
+    routeNames: alert.routeIds.map((routeId) => network.routeById[routeId]?.shortName ?? routeId)
+  };
 }
 
 /** A candidate train, checked against the trip's own stop list. */
@@ -37,7 +60,7 @@ type Leg = {
 };
 
 export async function POST(req: NextRequest) {
-  let network;
+  let network: Network;
   try {
     network = await loadNetwork();
   } catch (error) {
@@ -52,7 +75,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Pick two different stations to plan a trip." }, { status: 400 });
   }
 
-  const trip = planTrip(network, originId, destinationId);
+  let trip = planTrip(network, originId, destinationId);
   if (!trip) {
     return NextResponse.json(
       { error: "No subway route connects those two stations in the MBTA network data." },
@@ -71,43 +94,88 @@ export async function POST(req: NextRequest) {
     departShiftMinutes
   );
 
-  // Fetched before the departure loop so that a leg with no service can still be
-  // explained by the alert that caused it. Advisory: never sinks a good plan.
-  const tripRouteIds = trip.rides.map((ride) => ride.routeId);
-  const tripStationIds = new Set(trip.rides.flatMap((ride) => ride.stations.map((station) => station.id)));
-  let alerts: Array<{ id: string; header: string; effect: string; severity: number; routeNames: string[] }> = [];
+  // Alerts for the whole subway, not just this trip's lines: an alternative route
+  // can only be judged if we know what is broken everywhere. Advisory — a failure
+  // here must never sink an otherwise good plan.
+  let allAlerts: ServiceAlert[] = [];
   try {
-    const raw = await fetchAlerts(network, tripRouteIds);
-    alerts = raw
-      .filter((alert) => {
-        const onRoute = alert.routeIds.some((routeId) => tripRouteIds.includes(routeId));
-        if (!onRoute) return false;
-        // Whole-route alerts always apply; stop-scoped ones only if they name a
-        // station this trip actually passes through.
-        return alert.wholeRoute || alert.stationIds.some((id) => tripStationIds.has(id));
-      })
-      .sort((a, b) => b.severity - a.severity)
-      .slice(0, 4)
-      .map((alert) => ({
-        id: alert.id,
-        header: alert.header,
-        effect: alert.effect,
-        severity: alert.severity,
-        routeNames: alert.routeIds
-          .filter((routeId) => tripRouteIds.includes(routeId))
-          .map((routeId) => network.routeById[routeId]?.shortName ?? routeId)
-      }));
+    allAlerts = await fetchAlerts(
+      network,
+      network.routes.map((route) => route.id)
+    );
   } catch {
-    alerts = [];
+    allAlerts = [];
   }
 
+  const blocked = blockedFromAlerts(allAlerts);
+  let rerouted: { reason: string } | null = null;
+
+  // A closed origin or destination cannot be routed around.
+  const closedEndpoint = [originId, destinationId].find((id) => blocked.stations.has(id));
+  if (closedEndpoint) {
+    const closure = allAlerts.find(
+      (alert) => alert.effect === "STATION_CLOSURE" && alert.stationIds.includes(closedEndpoint)
+    );
+    return NextResponse.json(
+      {
+        error: `${network.stationById[closedEndpoint].name} is closed right now, so this trip is not possible.`,
+        alerts: closure ? [describeAlert(closure, network)] : []
+      },
+      { status: 404 }
+    );
+  }
+
+  // Plan around a suspension before wasting requests on trains that will not run.
+  if (tripUsesBlocked(trip, blocked)) {
+    const alternative = planTrip(network, originId, destinationId, blocked);
+    const culprit = allAlerts
+      .filter((alert) => isDisabling(alert.effect))
+      .filter((alert) =>
+        alert.entities.some(
+          (entity) =>
+            entity.routeId &&
+            trip!.rides.some(
+              (ride) =>
+                ride.routeId === entity.routeId &&
+                (!entity.stationId || ride.stations.some((station) => station.id === entity.stationId))
+            )
+        )
+      )
+      .sort((a, b) => b.severity - a.severity)[0];
+
+    const culpritLabel = culprit ? describeDisruption(culprit, network) : "a service disruption";
+
+    if (alternative) {
+      trip = alternative;
+      rerouted = { reason: `Routed around the ${culpritLabel}.` };
+    } else {
+      rerouted = { reason: `No way around the ${culpritLabel} on the subway — showing the blocked route.` };
+    }
+  }
+
+  const tripRouteIds = trip.rides.map((ride) => ride.routeId);
+  const tripStationIds = new Set(trip.rides.flatMap((ride) => ride.stations.map((station) => station.id)));
+
+  // Show alerts touching the final route, plus whatever forced the detour.
+  const alerts = allAlerts
+    .filter((alert) => {
+      const onRoute = alert.routeIds.some((routeId) => tripRouteIds.includes(routeId));
+      if (!onRoute) return false;
+      return alert.wholeRoute || alert.stationIds.some((id) => tripStationIds.has(id));
+    })
+    .sort((a, b) => b.severity - a.severity)
+    .slice(0, 4)
+    .map((alert) => describeAlert(alert, network));
+
+  /** Resolve a planned route into real boarded trains. Runs again for a reroute. */
+  async function buildItinerary(candidateTrip: PlannedTrip) {
   const legs: Leg[] = [];
   const notes: string[] = [];
   let cursorIso = requestedIso;
 
-  try {
-    for (let i = 0; i < trip.rides.length; i += 1) {
-      const ride = trip.rides[i];
+  {
+    for (let i = 0; i < candidateTrip.rides.length; i += 1) {
+      const ride = candidateTrip.rides[i];
       const routeName = network.routeById[ride.routeId]?.name ?? ride.routeId;
       const departures = await fetchDepartures({
         stationId: ride.from.id,
@@ -167,11 +235,47 @@ export async function POST(req: NextRequest) {
       if (!arrivalIso) break;
       cursorIso = arrivalIso;
     }
+  }
+
+    const complete =
+      legs.length === candidateTrip.rides.length && legs.every((leg) => leg.boarded && leg.arrivalIso);
+    return { legs, notes, complete };
+  }
+
+  let itinerary;
+  try {
+    itinerary = await buildItinerary(trip);
+
+    // The feed can dry up for reasons no alert covers. If the plan does not hold
+    // together, try again without the route that failed before giving up.
+    if (!itinerary.complete) {
+      const failedIndex = itinerary.legs.findIndex((leg) => !leg.boarded || !leg.arrivalIso);
+      const failedRouteId = trip.rides[failedIndex >= 0 ? failedIndex : 0]?.routeId;
+      if (failedRouteId && !rerouted) {
+        const detour = emptyAvoid();
+        blocked.routes.forEach((id) => detour.routes.add(id));
+        blocked.stations.forEach((id) => detour.stations.add(id));
+        blocked.routeStops.forEach((key) => detour.routeStops.add(key));
+        detour.routes.add(failedRouteId);
+
+        const alternative = planTrip(network, originId, destinationId, detour);
+        if (alternative) {
+          const attempt = await buildItinerary(alternative);
+          if (attempt.complete) {
+            const routeName = network.routeById[failedRouteId]?.name ?? failedRouteId;
+            trip = alternative;
+            itinerary = attempt;
+            rerouted = { reason: `Routed around the ${routeName}, which has no service right now.` };
+          }
+        }
+      }
+    }
   } catch (error) {
     const message = error instanceof MbtaApiError ? error.message : "The MBTA API did not respond.";
     return NextResponse.json({ error: message }, { status: 502 });
   }
 
+  const { legs, notes } = itinerary;
   const firstLeg = legs[0];
   if (!firstLeg?.boarded) {
     const route = network.routeById[trip.rides[0].routeId];
@@ -180,7 +284,8 @@ export async function POST(req: NextRequest) {
         error: `The MBTA has no live or scheduled ${route?.name ?? trip.rides[0].routeId} departures from ${trip.rides[0].from.name} at that time.`,
         // A suspension or closure is usually the reason; hand it back so the UI
         // can say why instead of just failing.
-        alerts
+        alerts,
+        rerouted
       },
       { status: 404 }
     );
@@ -385,6 +490,7 @@ export async function POST(req: NextRequest) {
     notes,
     legs: journeyLegs,
     alerts,
+    rerouted,
     walkMinutes,
     whatIf: { departShiftMinutes, delayMinutes },
     directions,

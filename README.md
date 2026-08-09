@@ -48,6 +48,9 @@ walk-time and what-if controls only appear once there is an answer to refine.
   thick over the dimmed rest of the system.
 - **Service alerts** — active suspensions, closures and delays touching the trip.
   These are also returned when a leg has no service, so a dead end explains itself.
+- **Rerouting** — the planner routes around whatever is out of service. During a
+  Green Line suspension, Park Street → Government Center (normally one stop) is
+  replanned as Red → Orange → Blue, with a banner saying why.
 - **Transfer guidance** — set your own walk time (1–15 min); every connection is
   scored against it. A tight connection offers to retry at a faster pace.
 - **Shareable links** — the trip lives in the URL (`?from=…&to=…&walk=…`), so it can
@@ -122,7 +125,11 @@ variables in its environment settings — `.env.local` is intentionally not comm
    `/route_patterns?canonical=true` call that returns the ordered stops of every
    branch. That yields ~125 stations and a branch-aware graph.
 2. A shortest-path search over that graph minimises transfers first, then number of
-   stops, and groups the result into rides and transfers.
+   stops, and groups the result into rides and transfers. Anything a disabling alert
+   covers is removed from the graph first, keyed by `routeId|stationId` so a
+   suspension takes out one line's edges at a station rather than the station
+   itself. If the feed then dries up for a reason no alert covers, the planner
+   retries once without the route that failed.
 3. For each leg the app fetches real departures at the boarding station, then
    resolves every candidate train's real arrival at the leg's destination in a
    single batched request (plus one timetable lookup if the prediction feed is
@@ -188,7 +195,8 @@ lib/
 - **Early morning and late night** have sparse predictions. The app falls back to
   the timetable where it can and reports the gap where it cannot, rather than
   showing times that do not exist.
-- **No alternative route is offered** when a leg has no service. The app names the
-  problem and shows the alert behind it, but will not yet route around a suspension.
+- **Rerouting is subway-only.** The MBTA's replacement shuttle buses are not in the
+  graph, so when every rail path is blocked the app says there is no way around
+  rather than inventing one.
 - **Journey tracking is time-based, not location-based.** It advances on the clock,
   so it assumes you boarded the train it put you on.

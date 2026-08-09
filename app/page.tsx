@@ -69,6 +69,7 @@ type PlanResult = {
   notes: string[];
   legs: JourneyLeg[];
   alerts: ServiceAlert[];
+  rerouted: { reason: string } | null;
   walkMinutes: number;
   whatIf: { departShiftMinutes: number; delayMinutes: number };
   geometry: Shape[];
@@ -663,6 +664,12 @@ export default function HomePage() {
                 now={now}
                 onReturnTrip={onSwap}
               />
+
+              {result.rerouted ? (
+                <div className="rerouteBanner">
+                  <span aria-hidden>↪</span> {result.rerouted.reason}
+                </div>
+              ) : null}
 
               {alertsCard}
 
