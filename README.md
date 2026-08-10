@@ -182,11 +182,15 @@ Numeric inputs are clamped server-side (walk 1–15 min, later start 0–60 min,
 
 Light and dark themes follow the system setting.
 
-Lines are shown as MBTA-style bullets: a coloured circle with the branch letter —
-**RL**, **OL**, **BL**, **M**, and **B/C/D/E** for the Green Line branches. Colour
-carries the line and the letter carries the branch, so the blue **BL** and the green
-**B** do not collide. Colours and names come from the API; only the letter is a
-display convention, and any route without one falls back to a derived initial.
+Rapid transit lines are shown as MBTA-style bullets: a coloured circle with the
+branch letter — **RL**, **OL**, **BL**, and **B/C/D/E** for the Green Line branches.
+Colour carries the line and the letter carries the branch, so the blue **BL** and the
+green **B** do not collide.
+
+The Mattapan trolley keeps its name as a pill and sits last in the row, since a
+bullet would imply a rapid transit line it is not. Any route without a branch letter
+falls back to that pill treatment automatically. Colours and names come from the API;
+only the bullet letters are a display convention.
 
 ## Project structure
 

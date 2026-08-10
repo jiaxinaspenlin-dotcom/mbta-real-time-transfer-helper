@@ -98,22 +98,22 @@ function confidenceClass(label: string | null) {
 }
 
 /**
- * What goes inside the line bullet. Trunk lines use the two-letter form, Green
- * branches use their branch letter, and Mattapan follows the MBTA service guide.
- * Presentation only — colours and names still come from the API, and any route not
- * listed falls back to a derived letter.
+ * Rapid transit lines get a bullet: the two-letter form for trunk lines, the branch
+ * letter for Green branches. Anything else — the Mattapan trolley — keeps its name
+ * as a pill, because a bullet would imply a rapid transit line it is not.
+ * Presentation only; colours and names still come from the API.
  */
 const ROUTE_GLYPHS: Record<string, string> = {
   Red: "RL",
   Orange: "OL",
-  Blue: "BL",
-  Mattapan: "M"
+  Blue: "BL"
 };
 
-function routeGlyph(route: { id: string; shortName: string }) {
+function routeGlyph(route: { id: string; shortName: string }): string | null {
   if (ROUTE_GLYPHS[route.id]) return ROUTE_GLYPHS[route.id];
   const parts = route.shortName.trim().split(/\s+/);
-  return parts.length > 1 ? parts[parts.length - 1] : parts[0].charAt(0);
+  // "Green B" -> "B". A single-word name has no branch letter, so no bullet.
+  return parts.length > 1 ? parts[parts.length - 1] : null;
 }
 
 function distanceKm(aLat: number, aLon: number, bLat: number, bLon: number) {
@@ -209,6 +209,17 @@ export default function HomePage() {
 
   const routeById = useMemo(
     () => Object.fromEntries((network?.routes ?? []).map((route) => [route.id, route])),
+    [network]
+  );
+
+  // Bulleted lines first in the API's own order, then anything shown as a pill, so
+  // the row of circles stays unbroken. Array.sort is stable, so order is preserved
+  // within each group.
+  const keyRoutes = useMemo(
+    () =>
+      [...(network?.routes ?? [])].sort(
+        (a, b) => Number(routeGlyph(a) === null) - Number(routeGlyph(b) === null)
+      ),
     [network]
   );
 
@@ -423,18 +434,21 @@ export default function HomePage() {
           </div>
         </div>
         <div className="lineKey">
-          {network.routes.map((route) => (
-            <span
-              key={route.id}
-              className="lineChip"
-              style={{ background: route.color, color: route.textColor }}
-              title={route.name}
-              aria-label={route.name}
-              role="img"
-            >
-              {routeGlyph(route)}
-            </span>
-          ))}
+          {keyRoutes.map((route) => {
+            const glyph = routeGlyph(route);
+            return (
+              <span
+                key={route.id}
+                className={glyph ? "lineChip" : "lineChip linePill"}
+                style={{ background: route.color, color: route.textColor }}
+                title={route.name}
+                aria-label={route.name}
+                role="img"
+              >
+                {glyph ?? route.shortName}
+              </span>
+            );
+          })}
         </div>
       </header>
 
