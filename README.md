@@ -20,7 +20,9 @@ the other:
 
 - **Between separate stops** (a bus stop to a station entrance) the coordinates are
   genuinely distinct, so the distance is real and the app shows it: *walk 114 m to
-  Park Street (1 min)*.
+  Park Street (1 min)*. The **distance** is measured; the **minutes** assume a pace of
+  80 m/min, which is an assumption of ours, and the straight-line distance ignores
+  the street network.
 - **Between platforms inside one station** the API returns identical coordinates for
   every platform — all eight at Park Street share a single point — and publishes no
   transfer times. So that number is a control you set, and the UI says so.
@@ -39,7 +41,10 @@ The app is built around the shape of an actual trip rather than a form and a rep
    draws rides and waits to scale, and each transfer explains its own badge in a
    sentence.
 5. **Ride** — the interface advances on its own: *board → on board → transfer now →
-   on board → arrived*, driven entirely by the leg timestamps.
+   on board → arrived*, driven entirely by the leg timestamps. Countdowns re-render
+   every 10 s without refetching, and the plan itself refreshes every 60 s — paused
+   when the tab is hidden or a fixed departure time is pinned. Countdowns fade once
+   the prediction behind them is over ~100 s old.
 6. **Arrive** — a completion state, with the return trip one tap away.
 
 A pinned trip strip keeps the route and its confidence visible throughout, and the
@@ -141,9 +146,10 @@ variables in its environment settings — `.env.local` is intentionally not comm
    carry no canonical flag, so their "typical" patterns are used instead. That is
    ~6,900 stops and ~11,000 directed edges, built in about 1.3 seconds cold and
    served from memory afterwards.
-   Stops within 400 m of each other are then linked by walking edges — bucketed into
-   a coarse grid, since comparing all stops pairwise would be 47 million checks.
-   These walk links are what make bus/subway transfers possible.
+   Stops within 400 m of each other are then linked by walking edges, capped at the
+   six nearest per stop and bucketed into a coarse grid, since comparing all stops
+   pairwise would be 47 million checks. These walk links are what make bus/subway
+   transfers possible.
 2. A binary-heap Dijkstra over that graph, weighted in rough minutes with a boarding
    penalty per mode (buses cost more to board, which is what stops it suggesting six
    buses to save one transfer). **These costs only rank candidate routes — every
@@ -166,6 +172,7 @@ variables in its environment settings — `.env.local` is intentionally not comm
 | Network graph | 12 h in-process, 24 h fetch cache | Routes and station ordering rarely change |
 | Predictions | 15 s | Real-time |
 | Schedules | 5 min | Timetables are static for the day |
+| Alerts | 60 s | Suspensions appear and clear during a trip |
 
 ### Routes
 
