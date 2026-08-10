@@ -659,42 +659,32 @@ h3 {
   overflow: hidden;
 }
 
+/* Mute the basemap so the coloured route is the figure and the streets are ground.
+   Only the tile pane is filtered; route lines live in the overlay pane. */
+.mapCanvas .leaflet-tile-pane {
+  filter: saturate(0.35) contrast(0.92) brightness(1.06);
+}
+
+/* Once a route is drawn there is more to compete with, so push the map back further. */
+.mapCanvas.mapPlanned .leaflet-tile-pane {
+  filter: saturate(0.12) contrast(0.88) brightness(1.1);
+}
+
+@media (prefers-color-scheme: dark) {
+  .mapCanvas .leaflet-tile-pane {
+    filter: saturate(0.3) brightness(0.78) contrast(1.05);
+  }
+
+  .mapCanvas.mapPlanned .leaflet-tile-pane {
+    filter: saturate(0.1) brightness(0.72) contrast(1.05);
+  }
+}
+
 .mapCanvasLoading {
   display: grid;
   place-items: center;
   color: var(--muted);
   background: var(--surface-2);
-}
-
-/* Top-right keeps the legend clear of the zoom controls and the OSM attribution. */
-.mapLegend {
-  position: absolute;
-  right: 10px;
-  top: 10px;
-  z-index: 500;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  max-width: calc(100% - 20px);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 6px 10px;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.mapLegend span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.mapLegend i {
-  width: 12px;
-  height: 4px;
-  border-radius: 2px;
 }
 
 .leaflet-tooltip.tripTip {
@@ -1096,7 +1086,7 @@ h3 {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   gap: 8px;
 }
 
@@ -1531,9 +1521,6 @@ h3 {
     grid-column: 1 / -1;
   }
 
-  .metrics {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
 
   .app {
     padding-bottom: 24px;
@@ -1551,9 +1538,6 @@ h3 {
     grid-column: auto;
   }
 
-  .metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 
   .mapCanvas {
     height: clamp(520px, 72vh, 860px);
@@ -1651,12 +1635,6 @@ h3 {
     min-height: 320px;
   }
 
-  /* The header already carries the full colour key, so the on-map copy would only
-     crowd the zoom controls at this width. */
-  .mapLegend {
-    display: none;
-  }
-
   /* Bottom sheet reads as native on a phone and keeps the keyboard clear. */
   .assistPanel {
     left: 0;
@@ -1682,9 +1660,6 @@ h3 {
 }
 
 @media (max-width: 420px) {
-  .metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 
   .topBar {
     padding: 12px;

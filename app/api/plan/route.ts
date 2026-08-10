@@ -507,6 +507,8 @@ export async function POST(req: NextRequest) {
     nextDeparture: formatClock(legs[1]?.boarded?.departureTime ?? departIso),
     liveStatus: firstLeg.boarded.status,
     transferCount: trip.rides.length - 1,
+    // Stops actually ridden through, summed across legs.
+    totalStops: journeyLegs.reduce((sum, leg) => sum + leg.stops, 0),
     dataSource: sources.has("prediction") ? (sources.size > 1 ? "mixed" : "prediction") : "schedule",
     incomplete,
     notes,

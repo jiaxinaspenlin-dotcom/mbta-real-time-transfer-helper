@@ -48,10 +48,17 @@ walk-time and what-if controls only appear once there is an answer to refine.
 ## Features
 
 - **Interactive map** — every rapid transit line and station drawn from the live
-  network. Tap a station for "Start here" / "End here"; the planned trip is drawn
-  thick over the dimmed rest of the system. Bus legs and walking links appear as
-  part of a planned trip (walks dashed), since drawing 149 bus routes at rest would
-  swamp the map.
+  network. Tap a station for "Start here" / "End here". Bus legs and walking links
+  appear as part of a planned trip (walks dashed), since drawing 149 bus routes at
+  rest would swamp the map.
+
+  The basemap is desaturated in CSS so the coloured route is the figure and the
+  streets are ground — street names and POIs are still there to orient by, just no
+  longer competing with the line you are trying to follow. Once a route is drawn the
+  map pushes back further, the rest of the network fades, and the other 120-odd
+  station dots shrink (they stay clickable, so you can still re-plan from the map).
+  The route gets a white casing to stand out, and every stop it passes through is
+  marked, so the stop count is visible on the map as well as in the summary.
 - **Service alerts** — active suspensions, closures and delays touching the trip.
   These are also returned when a leg has no service, so a dead end explains itself.
 - **Rerouting** — the planner routes around whatever is out of service. During a

@@ -66,6 +66,7 @@ type PlanResult = {
   nextDeparture: string | null;
   liveStatus: string | null;
   transferCount: number;
+  totalStops: number;
   dataSource: "prediction" | "schedule" | "mixed";
   incomplete: boolean;
   notes: string[];
@@ -477,7 +478,8 @@ export default function HomePage() {
           <span className="tripStripRoute">
             <strong>{result.title}</strong>
             <span>
-              {result.departAt} → {result.arriveAt ?? "—"} · {result.duration ?? "—"}
+              {result.departAt} → {result.arriveAt ?? "—"} · {result.duration ?? "—"} ·{" "}
+              {result.totalStops} stops
             </span>
           </span>
           <span className={confidenceClass(result.confidence)}>
@@ -731,6 +733,10 @@ export default function HomePage() {
                   <div>
                     <span>Duration</span>
                     <strong>{result.duration ?? "—"}</strong>
+                  </div>
+                  <div>
+                    <span>Stops</span>
+                    <strong>{result.totalStops}</strong>
                   </div>
                   <div>
                     <span>Transfers</span>
