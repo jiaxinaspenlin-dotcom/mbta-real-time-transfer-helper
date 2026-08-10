@@ -1,8 +1,18 @@
 # MBTA Transfer Helper
 
-A real-time multimodal transfer planner for the MBTA — subway, bus and the short
-walks between them. Plan a trip, see whether you will actually make each
-connection, and simulate what happens if you leave late or your train runs behind.
+MBTA Transfer Helper is a web application designed to help riders evaluate whether they can successfully make an MBTA transfer in real time. It combines route visualization, transfer guidance, live departure timing, and natural-language station assistance across subway, bus and the walks between them.
+
+## Overview
+
+Public transit riders often know where they want to go, but not always which station or transfer point gives them the best chance of making the next train. MBTA Transfer Helper addresses that problem by showing a rider's path on an interactive map, estimating transfer feasibility based on walking assumptions, and surfacing the next available connection using real-time MBTA data.
+
+This project was built as an app-style interface rather than a traditional webpage, with a focus on usability, route clarity, and transfer decision support.
+
+## Why I Built It
+
+I wanted to build a transit-focused application that goes beyond standard trip planning by helping riders make better transfer decisions in real time. Many transit tools show schedules and maps, but fewer help answer the practical question: **Can I actually make this connection?**
+
+This project also gave me the opportunity to combine API integration, route and timing logic, map-based UI design, real-time decision support, and LLM-assisted interaction in a single end-to-end application.
 
 ## Data policy
 
@@ -104,17 +114,32 @@ train marked "Red Line, southbound" may be an Ashmont train that never reaches
 Braintree. Each candidate train is therefore checked against its own stop list;
 trains that cannot complete your leg are shown but marked **Wrong branch**.
 
-## Setup
+## Tech Stack
+
+- Next.js (App Router) + TypeScript
+- Leaflet for the map
+- MBTA v3 API — routes, stops, predictions, schedules, alerts
+- OpenAI API — natural-language station matching
+
+## Getting Started
 
 Requires Node 18.17 or newer (developed on Node 24).
 
-1. Copy the env template:
+1. Clone and install:
+
+   ```bash
+   git clone https://github.com/jiaxinaspenlin-dotcom/mbta-real-time-transfer-helper.git
+   cd mbta-real-time-transfer-helper
+   npm install
+   ```
+
+2. Copy the env template:
 
    ```bash
    cp .env.example .env.local
    ```
 
-2. Fill in `.env.local` (it is gitignored; never commit real keys):
+3. Fill in `.env.local` (it is gitignored; never commit real keys):
 
    | Variable | Required | Notes |
    | --- | --- | --- |
@@ -122,10 +147,9 @@ Requires Node 18.17 or newer (developed on Node 24).
    | `OPENAI_API_KEY` | Optional | Enables the ✦ station assist panel only. Everything else works without it. |
    | `OPENAI_MODEL` | Optional | Defaults to `gpt-4o-mini`. Leaving it blank is fine. |
 
-3. Install and run:
+4. Start it:
 
    ```bash
-   npm install
    npm run dev
    ```
 
@@ -245,3 +269,15 @@ lib/
   across a river or rail cut reads shorter than it walks.
 - **Journey tracking is time-based, not location-based.** It advances on the clock,
   so it assumes you boarded the train it put you on.
+
+## Future Improvements
+
+- Commuter rail and ferry (the planner currently loads route types 0, 1 and 3)
+- Street-network walking distances instead of straight-line
+- Location-based journey tracking, rather than clock-based
+- An alternative route when every rail path is blocked
+- Saved trips and recent searches
+
+## Notes
+
+This project is a prototype built for transfer planning and rider decision support. It is not an official MBTA application.
