@@ -1,57 +1,92 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { LINE_COLORS, LINE_LABELS, stationsForSelect } from "@/lib/network";
+import StationPicker from "@/components/StationPicker";
+import NowCard from "@/components/NowCard";
+import Timeline from "@/components/Timeline";
+import { JourneyLeg, agoLabel, countdown, journeyState } from "@/lib/time";
 
-const RouteMap = dynamic(() => import("@/components/RouteMap"), { ssr: false });
+const RouteMap = dynamic(() => import("@/components/RouteMap"), {
+  ssr: false,
+  loading: () => <div className="mapCanvas mapCanvasLoading">Loading map…</div>
+});
 
-type Direction = {
-  id: string;
-  kind: "ride" | "transfer";
-  title: string;
-  detail: string;
-  line: keyof typeof LINE_COLORS | null;
-  badge: string;
+type LineRoute = { id: string; name: string; shortName: string; color: string; textColor: string };
+type Station = { id: string; name: string; lat: number; lon: number; routeIds: string[] };
+type Shape = { routeId: string; points: [number, number][] };
+type TripShape = { kind: "ride" | "walk"; routeId: string | null; color: string; points: [number, number][] };
+type NetworkData = { routes: LineRoute[]; stations: Station[]; geometry: Shape[] };
+
+type ServiceAlert = { id: string; header: string; effect: string; severity: number; routeNames: string[] };
+
+type ConnectionOption = {
+  departure: string | null;
+  departureIso: string | null;
+  headsign: string | null;
+  buffer: string | null;
+  confidence: string | null;
+  source: "prediction" | "schedule";
+  liveStatus: string | null;
+  serves: boolean;
+  note: string | null;
+  boarding: boolean;
 };
 
 type LiveConnection = {
   id: string;
   transferAt: string;
-  connectionLabel: string;
-  arriveAt: string;
-  boardAfter: string;
+  fromRouteId: string;
+  toRouteId: string;
+  arriveAt: string | null;
+  arriveIso: string | null;
+  boardAfter: string | null;
+  boardAfterIso: string | null;
   walkMinutes: number;
-  options: Array<{
-    departure: string;
-    buffer: string;
-    status: string;
-    liveStatus: string | null;
-  }>;
+  walkMeters: number | null;
+  confidence: string | null;
+  missedFirst: boolean;
+  headsign: string | null;
+  explain: string | null;
+  options: ConnectionOption[];
 };
 
 type PlanResult = {
   title: string;
   subtitle: string;
-  confidence: string;
-  transferWindow: string;
-  nextDeparture: string;
+  confidence: string | null;
+  transferWindow: string | null;
+  tightestAt: string | null;
+  departAt: string | null;
+  departIso: string | null;
+  arriveAt: string | null;
+  arriveIso: string | null;
+  duration: string | null;
+  generatedAt: string;
+  nextDeparture: string | null;
   liveStatus: string | null;
-  departAt: string;
   transferCount: number;
-  directions: Direction[];
-  geometry: Array<{ line: keyof typeof LINE_COLORS; points: [number, number][] }>;
+  totalStops: number;
+  dataSource: "prediction" | "schedule" | "mixed";
+  incomplete: boolean;
+  notes: string[];
+  legs: JourneyLeg[];
+  alerts: ServiceAlert[];
+  rerouted: { reason: string } | null;
+  walkMinutes: number;
+  whatIf: { departShiftMinutes: number; delayMinutes: number };
+  geometry: TripShape[];
   markers: Array<{ kind: "board" | "transfer" | "arrive"; name: string; lat: number; lon: number }>;
   liveConnections: LiveConnection[];
 };
 
-type StationSuggestion = {
-  stationId: string;
-  stationName: string;
-  reason: string;
-};
+type Suggestion = { stationId: string; stationName: string; routeIds: string[]; reason: string };
+type MobileView = "plan" | "map" | "trip";
 
-const stationOptions = stationsForSelect();
+const REFRESH_MS = 60_000;
+const TICK_MS = 10_000;
+const STALE_AFTER_MS = 100_000;
+const DEFAULT_WALK = 3;
 
 function nowLocal() {
   const d = new Date();
@@ -59,269 +94,901 @@ function nowLocal() {
   return d.toISOString().slice(0, 16);
 }
 
+function confidenceClass(label: string | null) {
+  return label ? `conf conf-${label.toLowerCase()}` : "conf conf-unknown";
+}
+
+/**
+ * Rapid transit lines get a bullet: the two-letter form for trunk lines, the branch
+ * letter for Green branches. Anything else — the Mattapan trolley — keeps its name
+ * as a pill, because a bullet would imply a rapid transit line it is not.
+ * Presentation only; colours and names still come from the API.
+ */
+const ROUTE_GLYPHS: Record<string, string> = {
+  Red: "RL",
+  Orange: "OL",
+  Blue: "BL"
+};
+
+function routeGlyph(route: { id: string; shortName: string }): string | null {
+  if (ROUTE_GLYPHS[route.id]) return ROUTE_GLYPHS[route.id];
+  const parts = route.shortName.trim().split(/\s+/);
+  // "Green B" -> "B". A single-word name has no branch letter, so no bullet.
+  return parts.length > 1 ? parts[parts.length - 1] : null;
+}
+
+function distanceKm(aLat: number, aLon: number, bLat: number, bLon: number) {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(bLat - aLat);
+  const dLon = toRad(bLon - aLon);
+  const h =
+    Math.sin(dLat / 2) ** 2 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
+const EFFECT_LABELS: Record<string, string> = {
+  SUSPENSION: "Suspended",
+  STATION_CLOSURE: "Station closed",
+  SHUTTLE: "Shuttle bus",
+  DELAY: "Delays",
+  DETOUR: "Detour",
+  STATION_ISSUE: "Station issue",
+  SERVICE_CHANGE: "Service change"
+};
+
 export default function HomePage() {
-  const [originId, setOriginId] = useState("south-station");
-  const [destinationId, setDestinationId] = useState("lechmere");
-  const [departAt, setDepartAt] = useState(nowLocal());
-  const [walkMinutes, setWalkMinutes] = useState(3);
+  const [network, setNetwork] = useState<NetworkData | null>(null);
+  const [networkError, setNetworkError] = useState<string | null>(null);
+
+  const [originId, setOriginId] = useState("");
+  const [destinationId, setDestinationId] = useState("");
+  const [leaveNow, setLeaveNow] = useState(true);
+  const [departAt, setDepartAt] = useState(nowLocal);
+  const [walkMinutes, setWalkMinutes] = useState(DEFAULT_WALK);
+  const [departShiftMinutes, setDepartShiftMinutes] = useState(0);
+  const [delayMinutes, setDelayMinutes] = useState(0);
+
   const [result, setResult] = useState<PlanResult | null>(null);
-  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [baseline, setBaseline] = useState<PlanResult | null>(null);
+  const [status, setStatus] = useState<"idle" | "loading">("idle");
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [assistText, setAssistText] = useState("");
-  const [assistStatus, setAssistStatus] = useState<"idle" | "loading" | "error">("idle");
-  const [assistError, setAssistError] = useState<string | null>(null);
-  const [assistSuggestions, setAssistSuggestions] = useState<StationSuggestion[]>([]);
+  const [errorAlerts, setErrorAlerts] = useState<ServiceAlert[]>([]);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
   const [assistOpen, setAssistOpen] = useState(false);
+  const [assistText, setAssistText] = useState("");
+  const [assistStatus, setAssistStatus] = useState<"idle" | "loading">("idle");
+  const [assistError, setAssistError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
 
-  const planned = Boolean(result);
+  const [mobileView, setMobileView] = useState<MobileView>("plan");
+  const [now, setNow] = useState(() => Date.now());
+  const requestId = useRef(0);
 
-  async function onPlan() {
-    setStatus("loading");
-    setError(null);
-    const res = await fetch("/api/plan", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ originId, destinationId, departAt, walkMinutes })
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      setStatus("error");
-      setError(json.error ?? "Unable to plan this trip.");
+  // Deep link in. Read before the network arrives; the API validates the ids.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const from = params.get("from");
+    const to = params.get("to");
+    const walk = Number(params.get("walk"));
+    if (from) setOriginId(from);
+    if (to) setDestinationId(to);
+    if (Number.isFinite(walk) && walk >= 1 && walk <= 15) setWalkMinutes(Math.round(walk));
+  }, []);
+
+  // Deep link out, so a trip can be bookmarked or shared without any storage.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (originId) params.set("from", originId);
+    if (destinationId) params.set("to", destinationId);
+    if (walkMinutes !== DEFAULT_WALK) params.set("walk", String(walkMinutes));
+    const query = params.toString();
+    window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
+  }, [originId, destinationId, walkMinutes]);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/network")
+      .then(async (res) => {
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? "Could not load the MBTA network.");
+        return json as NetworkData;
+      })
+      .then((data) => active && setNetwork(data))
+      .catch((err) => active && setNetworkError(err.message));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  const routeById = useMemo(
+    () => Object.fromEntries((network?.routes ?? []).map((route) => [route.id, route])),
+    [network]
+  );
+
+  // Bulleted lines first in the API's own order, then anything shown as a pill, so
+  // the row of circles stays unbroken. Array.sort is stable, so order is preserved
+  // within each group.
+  const keyRoutes = useMemo(
+    () =>
+      [...(network?.routes ?? [])].sort(
+        (a, b) => Number(routeGlyph(a) === null) - Number(routeGlyph(b) === null)
+      ),
+    [network]
+  );
+
+  const runPlan = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (!originId || !destinationId || originId === destinationId) return;
+      const id = ++requestId.current;
+      if (options?.silent) setRefreshing(true);
+      else setStatus("loading");
+      setError(null);
+      setErrorAlerts([]);
+
+      try {
+        const res = await fetch("/api/plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            originId,
+            destinationId,
+            departAt: leaveNow ? null : departAt,
+            walkMinutes,
+            departShiftMinutes,
+            delayMinutes
+          })
+        });
+        const json = await res.json();
+        if (id !== requestId.current) return;
+        setStatus("idle");
+        setRefreshing(false);
+        if (!res.ok) {
+          setResult(null);
+          setError(json.error ?? "Unable to plan this trip.");
+          setErrorAlerts(json.alerts ?? []);
+          return;
+        }
+        setResult(json);
+        // Keep an unsimulated copy so what-if can be shown as a delta.
+        if (!departShiftMinutes && !delayMinutes) setBaseline(json);
+        setNow(Date.now());
+      } catch {
+        if (id !== requestId.current) return;
+        setStatus("idle");
+        setRefreshing(false);
+        setError("Could not reach the planner. Check your connection and try again.");
+      }
+    },
+    [originId, destinationId, leaveNow, departAt, walkMinutes, departShiftMinutes, delayMinutes]
+  );
+
+  // Once both stations are known the app has everything it needs, so planning is
+  // automatic. The button below is a refresh, not a gate.
+  useEffect(() => {
+    if (!originId || !destinationId || originId === destinationId) return;
+    const timer = setTimeout(() => void runPlan(), 350);
+    return () => clearTimeout(timer);
+  }, [originId, destinationId, walkMinutes, leaveNow, departAt, departShiftMinutes, delayMinutes, runPlan]);
+
+  useEffect(() => {
+    if (!result || !leaveNow) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void runPlan({ silent: true });
+    }, REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [result, leaveNow, runPlan]);
+
+  const useMyLocation = useCallback(() => {
+    if (!network) return;
+    if (!navigator.geolocation) {
+      setLocationError("This browser cannot share your location.");
       return;
     }
-    setResult(json);
-    setStatus("idle");
-  }
+    setLocating(true);
+    setLocationError(null);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        const nearest = network.stations.reduce((best, station) => {
+          const d = distanceKm(latitude, longitude, station.lat, station.lon);
+          return !best || d < best.d ? { station, d } : best;
+        }, null as { station: Station; d: number } | null);
+        setLocating(false);
+        if (nearest) setOriginId(nearest.station.id);
+        else setLocationError("No MBTA station found near you.");
+      },
+      () => {
+        setLocating(false);
+        setLocationError("Could not get your location. Pick a station instead.");
+      },
+      { timeout: 8000, maximumAge: 60_000 }
+    );
+  }, [network]);
+
+  const onSwap = useCallback(() => {
+    setOriginId(destinationId);
+    setDestinationId(originId);
+  }, [originId, destinationId]);
+
+  const onReset = useCallback(() => {
+    setResult(null);
+    setBaseline(null);
+    setError(null);
+    setErrorAlerts([]);
+    setOriginId("");
+    setDestinationId("");
+    setDepartShiftMinutes(0);
+    setDelayMinutes(0);
+    setLeaveNow(true);
+    setMobileView("plan");
+  }, []);
+
+  const onMapSelect = useCallback((stationId: string, role: "origin" | "destination") => {
+    if (role === "origin") setOriginId(stationId);
+    else setDestinationId(stationId);
+  }, []);
 
   async function onSuggestStations() {
     if (!assistText.trim()) return;
     setAssistStatus("loading");
     setAssistError(null);
-    setAssistSuggestions([]);
-    const res = await fetch("/api/station-assist", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: assistText })
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      setAssistStatus("error");
-      setAssistError(json.error ?? "Unable to suggest stations right now.");
-      return;
+    setSuggestions([]);
+    try {
+      const res = await fetch("/api/station-assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: assistText })
+      });
+      const json = await res.json();
+      setAssistStatus("idle");
+      if (!res.ok) {
+        setAssistError(json.error ?? "Station assist is unavailable.");
+        return;
+      }
+      setSuggestions(json.suggestions ?? []);
+      if (!json.suggestions?.length) setAssistError("No station in the MBTA network matched that description.");
+    } catch {
+      setAssistStatus("idle");
+      setAssistError("Station assist is unavailable.");
     }
-    setAssistSuggestions(json.suggestions ?? []);
-    setAssistStatus("idle");
   }
 
-  function onSwap() {
-    setOriginId(destinationId);
-    setDestinationId(originId);
-    setResult(null);
+  const planned = Boolean(result);
+  const bothChosen = Boolean(originId && destinationId && originId !== destinationId);
+  const whatIfActive = departShiftMinutes > 0 || delayMinutes > 0;
+  const journey = result ? journeyState(result.legs, now) : null;
+  const riding = journey ? journey.phase !== "toBoard" : false;
+  const stale = result ? now - new Date(result.generatedAt).getTime() > STALE_AFTER_MS : false;
+  const step = !bothChosen ? 1 : riding ? 3 : 2;
+
+  if (networkError) {
+    return (
+      <main className="bootScreen">
+        <div className="bootCard">
+          <h1>MBTA data unavailable</h1>
+          <p>{networkError}</p>
+          <p className="mutedText">
+            This app shows only real MBTA data, so it will not display a route until the API responds.
+          </p>
+          <button className="primaryButton" type="button" onClick={() => window.location.reload()}>
+            Try again
+          </button>
+        </div>
+      </main>
+    );
   }
 
-  const mapGeometry = useMemo(() => result?.geometry ?? [], [result]);
-  const markers = useMemo(() => result?.markers ?? [], [result]);
+  if (!network) {
+    return (
+      <main className="bootScreen">
+        <div className="bootCard">
+          <div className="spinner" aria-hidden />
+          <h1>Loading the MBTA network…</h1>
+          <p className="mutedText">Fetching live routes and stations from the MBTA API.</p>
+        </div>
+      </main>
+    );
+  }
+
+  const alerts = result?.alerts ?? errorAlerts;
+
+  const alertsCard = alerts.length ? (
+    <div className="card alertCard">
+      <div className="cardHead">
+        <h2>Service alerts</h2>
+      </div>
+      {alerts.map((alert) => (
+        <div key={alert.id} className="alertItem">
+          <span className="alertEffect">{EFFECT_LABELS[alert.effect] ?? alert.effect.replace(/_/g, " ")}</span>
+          <p>{alert.header}</p>
+        </div>
+      ))}
+    </div>
+  ) : null;
 
   return (
-    <main className="pageShell">
-      <div className="appShell">
-        <header className="appHeader">
+    <main className="app">
+      <header className="topBar">
+        <div className="brand">
+          {/* Two routes meeting at a station node: the transfer this app is about. */}
+          <span className="brandMark" aria-hidden>
+            <svg viewBox="0 0 64 64" focusable="false">
+              <rect width="64" height="64" rx="14" fill="#101c2e" />
+              <path d="M32 23V45" stroke="#ffffff" strokeWidth="4.5" strokeLinecap="round" opacity="0.55" />
+              <path d="M9 23h46" stroke="#ED8B00" strokeWidth="9" strokeLinecap="round" />
+              <path d="M9 45h46" stroke="#DA291C" strokeWidth="9" strokeLinecap="round" />
+              <circle cx="32" cy="23" r="5.5" fill="#ffffff" />
+              <circle cx="32" cy="45" r="5.5" fill="#ffffff" />
+            </svg>
+          </span>
           <div>
-            <div className="eyebrow">MBTA Transfer Helper</div>
-            <h1>Live transfer planning</h1>
-            <p>Plan the route, preview the line map, and use Gemini when you are unsure which station fits your destination.</p>
+            <h1>MBTA Transfer Helper</h1>
+            <p>Live connections, transfer confidence, and what-if planning</p>
           </div>
-          <div className="linePills">
-            {Object.entries(LINE_COLORS).map(([id, color]) => (
-              <span key={id} className="linePill" style={{ borderColor: color, color }}>
-                {LINE_LABELS[id as keyof typeof LINE_LABELS].replace(" Line", "")}
+        </div>
+        <div className="lineKey">
+          {keyRoutes.map((route) => {
+            const glyph = routeGlyph(route);
+            return (
+              <span
+                key={route.id}
+                className={glyph ? "lineChip" : "lineChip linePill"}
+                style={{ background: route.color, color: route.textColor }}
+                title={route.name}
+                aria-label={route.name}
+                role="img"
+              >
+                {glyph ?? route.shortName}
               </span>
-            ))}
-          </div>
-        </header>
+            );
+          })}
+        </div>
+      </header>
 
-        <section className={`mainGrid ${planned ? "planned" : ""}`}>
-          <div className="leftColumn">
-            <section className="panelCard plannerCard">
-              <div className="panelHeaderRow">
-                <div>
-                  <div className="sectionHeader">Trip setup</div>
-                  <h2>Choose your route</h2>
-                </div>
-                <button className="swapButton" type="button" onClick={onSwap}>Swap</button>
-              </div>
+      <ol className="stepper" aria-label="Where you are in the trip">
+        {(
+          [
+            ["Pick your stations", "Stations"],
+            ["Check your transfers", "Transfers"],
+            ["Ride it", "Ride"]
+          ] as Array<[string, string]>
+        ).map(([full, short], index) => (
+          <li key={full} className={step >= index + 1 ? "on" : ""}>
+            <b>{index + 1}</b>
+            <span className="stepFull">{full}</span>
+            <span className="stepShort">{short}</span>
+          </li>
+        ))}
+      </ol>
 
-              <div className="formGrid">
-                <div className="fieldBlock">
-                  <label className="fieldLabel">Board at</label>
-                  <select className="fieldInput" value={originId} onChange={(e) => setOriginId(e.target.value)}>
-                    {stationOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                  </select>
-                </div>
-                <div className="fieldBlock">
-                  <label className="fieldLabel">Head to</label>
-                  <select className="fieldInput" value={destinationId} onChange={(e) => setDestinationId(e.target.value)}>
-                    {stationOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                  </select>
-                </div>
-                <div className="fieldBlock">
-                  <label className="fieldLabel">Depart at</label>
-                  <input className="fieldInput" type="datetime-local" value={departAt} onChange={(e) => setDepartAt(e.target.value)} />
-                </div>
-                <div className="fieldBlock">
-                  <label className="fieldLabel">Walk between platforms</label>
-                  <div className="sliderCard">
-                    <div className="sliderMeta"><strong>{walkMinutes} min</strong><span>Transfer window assumption</span></div>
-                    <input type="range" min={1} max={8} step={1} value={walkMinutes} onChange={(e) => setWalkMinutes(Number(e.target.value))} />
-                  </div>
-                </div>
-              </div>
-
-
-              {error ? <div className="errorBox">{error}</div> : null}
-              <div className="actionRow">
-                <button className="secondaryButton" type="button" onClick={() => { setResult(null); setError(null); }}>Reset</button>
-                <button className="primaryButton planButton" type="button" onClick={onPlan} disabled={status === "loading"}>
-                  {status === "loading" ? "Planning…" : "Plan route"}
-                </button>
-              </div>
-            </section>
-
-            <section className="panelCard summaryCard">
-              <div className="summaryTop">
-                <div>
-                  <div className="sectionHeader">Route summary</div>
-                  <h2>{result?.title ?? "Ready to route"}</h2>
-                  <p className="mutedText">{result?.subtitle ?? "Select an origin and destination, then press Plan route to load the trip."}</p>
-                </div>
-                {planned ? <span className={`confidencePill confidence-${result?.confidence?.toLowerCase()}`}>{result?.confidence}</span> : null}
-              </div>
-              <div className="summaryGrid">
-                <div className="metricCard"><span>Departure</span><strong>{result?.departAt ?? "—"}</strong></div>
-                <div className="metricCard"><span>Transfer window</span><strong>{result?.transferWindow ?? "—"}</strong></div>
-                <div className="metricCard"><span>Transfers</span><strong>{result?.transferCount ?? "—"}</strong></div>
-                <div className="metricCard"><span>Next train</span><strong>{result?.nextDeparture ?? "—"}</strong></div>
-              </div>
-              {result?.liveStatus ? <div className="statusStrip">Live MBTA status: {result.liveStatus}</div> : null}
-            </section>
-
-
-
-          </div>
-
-          <div className="rightColumn">
-            <section className="panelCard mapCard">
-              <div className="sectionHeader">Interactive map</div>
-              <h2>{planned ? "Trip path and transfer points" : "View the route map"}</h2>
-              <p className="mutedText">The map expands when a route is planned and colors each ride segment using the MBTA line being taken.</p>
-              <RouteMap geometry={mapGeometry} markers={markers} />
-            </section>
-
-            <section className="panelCard directionsCard">
-              <div className="sectionHeader">Directions</div>
-              <h2>{planned ? "Step-by-step guidance" : "Route guidance will appear here"}</h2>
-              {planned ? (
-                <div className="directionsList">
-                  {result?.directions.map((step, idx) => (
-                    <div key={step.id} className="directionItem" style={{ borderLeftColor: step.line ? LINE_COLORS[step.line] : "#94a3b8" }}>
-                      <div className="directionIndex">{idx + 1}</div>
-                      <div className="directionBody">
-                        <strong>{step.title}</strong>
-                        <span>{step.detail}</span>
-                      </div>
-                      <div className="directionBadge">{step.badge}</div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="mutedText">After you plan a trip, this panel will show where to board, where to transfer, and where to arrive.</p>
-              )}
-            </section>
-
-            <section className="panelCard connectionCard">
-              <div className="sectionHeader">Live connection finder</div>
-              <h2>{planned ? "Next available connections" : "Show next available trains"}</h2>
-              {planned && result?.liveConnections?.length ? (
-                <div className="connectionList">
-                  {result.liveConnections.map((connection) => (
-                    <div key={connection.id} className="connectionItem">
-                      <div className="connectionTop">
-                        <div className="connectionTitleBlock">
-                          <strong>{connection.transferAt}</strong>
-                          <span>{connection.connectionLabel}</span>
-                        </div>
-                        <div className="connectionTimingBlock">
-                          <span>Arrive {connection.arriveAt}</span>
-                          <span>Board after {connection.boardAfter}</span>
-                        </div>
-                      </div>
-                      <div className="connectionOptions">
-                        {connection.options.map((option, idx) => (
-                          <div key={`${connection.id}-${idx}`} className="connectionOption">
-                            <div>
-                              <span className="connectionOptionLabel">{idx === 0 ? "Next connection" : "Fallback"}</span>
-                              <strong>{option.departure}</strong>
-                            </div>
-                            <div>
-                              <span className="connectionOptionLabel">Buffer</span>
-                              <strong>{option.buffer}</strong>
-                            </div>
-                            <div>
-                              <span className="connectionOptionLabel">Status</span>
-                              <strong>{option.status}</strong>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="mutedText">When you plan a route, this card shows the next boardable train at each transfer point using real-time MBTA predictions, plus the next fallback option.</p>
-              )}
-            </section>
-          </div>
-</section>
+      {planned && result ? (
         <button
           type="button"
-          className="geminiLauncher"
-          aria-label="Open Gemini station assist"
-          onClick={() => setAssistOpen((v) => !v)}
+          className="tripStrip"
+          onClick={() => setMobileView(mobileView === "trip" ? "plan" : "trip")}
         >
-          ✦
+          <span className="tripStripRoute">
+            <strong>{result.title}</strong>
+            <span>
+              {result.departAt} → {result.arriveAt ?? "—"} · {result.duration ?? "—"} ·{" "}
+              {result.totalStops} stops
+            </span>
+          </span>
+          <span className={confidenceClass(result.confidence)}>
+            {result.confidence ?? (result.transferCount === 0 ? "Direct" : "—")}
+          </span>
         </button>
+      ) : null}
 
-        {assistOpen ? (
-          <div className="assistModal">
-            <div className="assistModalHeader">
-              <div>
-                <div className="sectionHeader">Gemini station assist</div>
-                <h3>Find the right MBTA stop</h3>
-              </div>
-              <button type="button" className="assistClose" onClick={() => setAssistOpen(false)}>Close</button>
+      <div className="workspace">
+        <section className={`col colPlan ${mobileView === "plan" ? "activeView" : ""}`} aria-label="Trip setup">
+          <div className="card">
+            <div className="cardHead">
+              <h2>{originId ? "Your trip" : "Where to?"}</h2>
+              {bothChosen ? (
+                <button className="ghostButton" type="button" onClick={onSwap}>
+                  ⇅ Swap
+                </button>
+              ) : null}
             </div>
-            <p className="mutedText">Describe the place you want to reach and Gemini will suggest nearby MBTA stations.</p>
-            <div className="assistRow">
-              <textarea className="assistInput" placeholder="Near TD Garden, Boston Common, MIT, Logan Airport..." value={assistText} onChange={(e) => setAssistText(e.target.value)} />
-              <button className="primaryButton" type="button" onClick={onSuggestStations} disabled={assistStatus === "loading"}>
-                {assistStatus === "loading" ? "Finding stations…" : "Suggest stations"}
+
+            <StationPicker
+              label="Board at"
+              value={originId}
+              stations={network.stations}
+              routeById={routeById}
+              onChange={setOriginId}
+            />
+
+            <div className="pickRow">
+              <button className="ghostButton small" type="button" onClick={useMyLocation} disabled={locating}>
+                {locating ? "Locating…" : "◎ Nearest to me"}
+              </button>
+              <button className="ghostButton small mapOnly" type="button" onClick={() => setMobileView("map")}>
+                Choose on map
               </button>
             </div>
+            {locationError ? <p className="hint">{locationError}</p> : null}
+
+            <StationPicker
+              label="Head to"
+              value={destinationId}
+              stations={network.stations}
+              routeById={routeById}
+              onChange={setDestinationId}
+            />
+
+            <button type="button" className="assistTrigger" onClick={() => setAssistOpen(true)}>
+              <span aria-hidden>✦</span> Not sure which stop? Describe the place
+            </button>
+
+            <div className="field">
+              <span>Leaving</span>
+              <div className="segmented" role="group" aria-label="Departure time">
+                <button type="button" className={leaveNow ? "on" : ""} aria-pressed={leaveNow} onClick={() => setLeaveNow(true)}>
+                  Now
+                </button>
+                <button
+                  type="button"
+                  className={!leaveNow ? "on" : ""}
+                  aria-pressed={!leaveNow}
+                  onClick={() => {
+                    setDepartAt(nowLocal());
+                    setLeaveNow(false);
+                  }}
+                >
+                  At a time
+                </button>
+              </div>
+              {!leaveNow ? (
+                <input
+                  type="datetime-local"
+                  value={departAt}
+                  onChange={(e) => setDepartAt(e.target.value)}
+                  aria-label="Departure time"
+                />
+              ) : null}
+            </div>
+
+            {error ? (
+              <div className="errorBox">
+                {error}
+                {errorAlerts.length ? <div className="errorWhy">See the service alerts below for why.</div> : null}
+              </div>
+            ) : null}
+
+            {!bothChosen ? (
+              <p className="hint">
+                Pick both stations and the trip plans itself — no button needed.
+              </p>
+            ) : (
+              <div className="actions plannerActions">
+                <button className="primaryButton" type="button" onClick={() => void runPlan()} disabled={status === "loading"}>
+                  {status === "loading" ? "Checking MBTA…" : "Refresh"}
+                </button>
+                <button className="linkButton" type="button" onClick={onReset}>
+                  Start over
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Refinements only appear once there is an answer to refine. */}
+          {planned ? (
+            <>
+              <div className="card">
+                <div className="cardHead">
+                  <h2>Your walking pace</h2>
+                </div>
+                <div className="field">
+                  <span>
+                    Platform-to-platform walk <b>{walkMinutes} min</b>
+                  </span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={15}
+                    step={1}
+                    value={walkMinutes}
+                    onChange={(e) => setWalkMinutes(Number(e.target.value))}
+                    aria-label="Minutes you need to walk between platforms"
+                  />
+                  <div className="rangeEnds">
+                    <span>1 min · fast</span>
+                    <span>15 min · slow</span>
+                  </div>
+                  <p className="hint">Your setting, not our estimate — the MBTA publishes no platform distances.</p>
+                </div>
+              </div>
+
+              <div className={`card whatIfCard ${whatIfActive ? "armed" : ""}`}>
+                <div className="cardHead">
+                  <h2>What if…</h2>
+                  {whatIfActive ? (
+                    <button
+                      className="ghostButton small"
+                      type="button"
+                      onClick={() => {
+                        setDepartShiftMinutes(0);
+                        setDelayMinutes(0);
+                      }}
+                    >
+                      Clear
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="field">
+                  <span>
+                    I leave <b>{departShiftMinutes} min</b> later
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={60}
+                    step={5}
+                    value={departShiftMinutes}
+                    onChange={(e) => setDepartShiftMinutes(Number(e.target.value))}
+                  />
+                </div>
+
+                <div className="field">
+                  <span>
+                    My train runs <b>{delayMinutes} min</b> late
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={30}
+                    step={1}
+                    value={delayMinutes}
+                    onChange={(e) => setDelayMinutes(Number(e.target.value))}
+                  />
+                </div>
+
+                {whatIfActive && baseline && result ? (
+                  <div className="delta">
+                    <div>
+                      <span>Confidence</span>
+                      <strong>
+                        <em className={confidenceClass(baseline.confidence)}>{baseline.confidence ?? "—"}</em>
+                        {" → "}
+                        <em className={confidenceClass(result.confidence)}>{result.confidence ?? "—"}</em>
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Arrive</span>
+                      <strong>
+                        {baseline.arriveAt ?? "—"} → {result.arriveAt ?? "—"}
+                      </strong>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </>
+          ) : null}
+        </section>
+
+        <section className={`col colMap ${mobileView === "map" ? "activeView" : ""}`} aria-label="Route map">
+          <div className="card mapShell">
+            <div className="cardHead">
+              <h2>{planned ? "Your route" : "The network"}</h2>
+              <span className="badge">
+                {!originId ? "Tap a station to start" : !destinationId ? "Now tap your destination" : "Trip highlighted"}
+              </span>
+            </div>
+            <RouteMap
+              routes={network.routes}
+              network={network.geometry}
+              stations={network.stations}
+              trip={result?.geometry ?? []}
+              markers={result?.markers ?? []}
+              originId={originId}
+              destinationId={destinationId}
+              onSelect={onMapSelect}
+            />
+          </div>
+        </section>
+
+        <section className={`col colTrip ${mobileView === "trip" ? "activeView" : ""}`} aria-label="Trip results">
+          {planned && result ? (
+            <>
+              <NowCard
+                legs={result.legs}
+                connections={result.liveConnections}
+                destinationName={result.legs[result.legs.length - 1]?.toName ?? ""}
+                now={now}
+                onReturnTrip={onSwap}
+              />
+
+              {result.rerouted ? (
+                <div className="rerouteBanner">
+                  <span aria-hidden>↪</span> {result.rerouted.reason}
+                </div>
+              ) : null}
+
+              {alertsCard}
+
+              <div className="card summaryCard">
+                <div className="metrics">
+                  <div className="leadMetric">
+                    <span>Depart</span>
+                    <strong>{result.departAt ?? "—"}</strong>
+                    {countdown(result.departIso, now) ? (
+                      <em className={`countdown${stale ? " stale" : ""}`}>{countdown(result.departIso, now)}</em>
+                    ) : null}
+                  </div>
+                  <div>
+                    <span>Arrive</span>
+                    <strong>{result.arriveAt ?? "—"}</strong>
+                  </div>
+                  <div>
+                    <span>Duration</span>
+                    <strong>{result.duration ?? "—"}</strong>
+                  </div>
+                  <div>
+                    <span>Stops</span>
+                    <strong>{result.totalStops}</strong>
+                  </div>
+                  <div>
+                    <span>Transfers</span>
+                    <strong>{result.transferCount}</strong>
+                  </div>
+                </div>
+
+                {result.transferCount > 0 ? (
+                  <div className="tightest">
+                    Tightest transfer{result.tightestAt ? ` at ${result.tightestAt}` : ""}:{" "}
+                    <b>{result.transferWindow ?? "unknown"}</b> of slack after your walk
+                  </div>
+                ) : null}
+
+                <div className="sourceRow">
+                  <span className={`sourceTag ${result.dataSource}`}>
+                    {result.dataSource === "prediction"
+                      ? "Live predictions"
+                      : result.dataSource === "schedule"
+                        ? "Scheduled times"
+                        : "Live + scheduled"}
+                  </span>
+                  {whatIfActive ? <span className="statusTag simTag">Simulated</span> : null}
+                  {leaveNow ? (
+                    <span className={`statusTag liveTag${refreshing ? " pulsing" : ""}`}>
+                      <i className="liveDot" aria-hidden /> Updated {agoLabel(result.generatedAt, now)}
+                    </span>
+                  ) : null}
+                </div>
+
+                {result.notes.length ? (
+                  <div className="warnBox">
+                    <b>Gaps in the MBTA feed</b>
+                    <ul>
+                      {result.notes.map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="card">
+                <div className="cardHead">
+                  <h2>The whole trip</h2>
+                </div>
+                <Timeline legs={result.legs} connections={result.liveConnections} now={now} />
+              </div>
+
+              {result.liveConnections.length ? (
+                <div className="card">
+                  <div className="cardHead">
+                    <h2>Next connections</h2>
+                  </div>
+                  <div className="legend">
+                    <span className="conf conf-likely">Likely</span> 3+ min spare
+                    <span className="conf conf-risky">Risky</span> under 3 min
+                    <span className="conf conf-unlikely">Unlikely</span> leaves before you arrive
+                  </div>
+                  <div className="connections">
+                    {result.liveConnections.map((connection) => (
+                      <div key={connection.id} className="connection">
+                        <div className="connectionHead">
+                          <div>
+                            <strong>{connection.transferAt}</strong>
+                            <span className="routeHop">
+                              <i style={{ background: routeById[connection.fromRouteId]?.color }} />
+                              {routeById[connection.fromRouteId]?.shortName}
+                              {" → "}
+                              <i style={{ background: routeById[connection.toRouteId]?.color }} />
+                              {routeById[connection.toRouteId]?.shortName}
+                            </span>
+                          </div>
+                          <span className={confidenceClass(connection.confidence)}>
+                            {connection.confidence ?? "No data"}
+                          </span>
+                        </div>
+
+                        {connection.explain ? <p className="explain">{connection.explain}</p> : null}
+
+                        {connection.missedFirst ? (
+                          <p className="noOptions">
+                            You cannot reach the platform in time for the first train — the plan puts you on a later one.
+                          </p>
+                        ) : null}
+
+                        {/* The walk slider is the lever that flips this badge, so offer it here. */}
+                        {(connection.confidence === "Risky" || connection.confidence === "Unlikely") &&
+                        walkMinutes > 1 ? (
+                          <button
+                            type="button"
+                            className="nudge"
+                            onClick={() => setWalkMinutes(walkMinutes - 1)}
+                          >
+                            Could you walk it in {walkMinutes - 1} min? Try it →
+                          </button>
+                        ) : null}
+
+                        {!connection.options.length ? (
+                          <p className="noOptions">
+                            No {routeById[connection.toRouteId]?.name ?? connection.toRouteId} departures are being
+                            reported here right now.
+                          </p>
+                        ) : null}
+
+                        <div className="options">
+                          {connection.options.map((option, idx) => (
+                            <div
+                              key={idx}
+                              className={`option${option.boarding ? " boarding" : ""}${option.serves ? "" : " wrongBranch"}`}
+                            >
+                              <div className="optionTime">
+                                <strong>
+                                  {option.departure ?? "—"}
+                                  {countdown(option.departureIso, now) ? (
+                                    <em className={`countdown${stale ? " stale" : ""}`}>
+                                      {countdown(option.departureIso, now)}
+                                    </em>
+                                  ) : null}
+                                </strong>
+                                {option.headsign ? <span>toward {option.headsign}</span> : null}
+                              </div>
+                              <div className="optionMeta">
+                                {option.serves ? (
+                                  <>
+                                    <span className={confidenceClass(option.confidence)}>{option.confidence ?? "—"}</span>
+                                    <span className="buffer">{option.buffer ?? "—"}</span>
+                                  </>
+                                ) : (
+                                  <span className="conf conf-unknown">Wrong branch</span>
+                                )}
+                              </div>
+                              {option.boarding ? <span className="boardFlag">You board this</span> : null}
+                              {option.note ? <span className="optionNote">{option.note}</span> : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <>
+              {alertsCard}
+              <div className="card">
+                <div className="empty">
+                  <h2>{bothChosen ? "Planning…" : "Your trip will appear here"}</h2>
+                  <p className="mutedText">
+                    {bothChosen
+                      ? "Checking live MBTA departures."
+                      : "Choose where you are and where you are going. You will get the next departures, how likely each transfer is, and a step that updates as you travel."}
+                  </p>
+                  {!bothChosen ? (
+                    <ul className="teaser">
+                      <li>Live departures, not a timetable guess</li>
+                      <li>Likely / Risky / Unlikely for every transfer</li>
+                      <li>Follows along once you are moving</li>
+                    </ul>
+                  ) : null}
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+      </div>
+
+      {assistOpen ? (
+        <>
+          <div className="assistScrim" onClick={() => setAssistOpen(false)} aria-hidden />
+          <div className="assistPanel" role="dialog" aria-modal="true" aria-label="Station assist">
+            <div className="cardHead">
+              <h2>Find the right stop</h2>
+              <button className="ghostButton" type="button" onClick={() => setAssistOpen(false)}>
+                Close
+              </button>
+            </div>
+            <p className="hint">Describe where you are going and OpenAI will match it to real MBTA stations.</p>
+            <textarea
+              value={assistText}
+              onChange={(e) => setAssistText(e.target.value)}
+              placeholder="TD Garden, the aquarium, Fenway…"
+              rows={3}
+            />
+            <button
+              className="primaryButton fullWidth"
+              type="button"
+              onClick={onSuggestStations}
+              disabled={assistStatus === "loading"}
+            >
+              {assistStatus === "loading" ? "Asking…" : "Suggest stations"}
+            </button>
             {assistError ? <div className="errorBox">{assistError}</div> : null}
-            {assistSuggestions.length ? (
-              <div className="suggestionsGrid">
-                {assistSuggestions.map((item) => (
-                  <button key={item.stationId} className="suggestionCard" type="button" onClick={() => { setDestinationId(item.stationId); setAssistOpen(false); }}>
-                    <strong>{item.stationName}</strong>
-                    <span>{item.reason}</span>
-                  </button>
+            {suggestions.length ? (
+              <div className="suggestions">
+                {suggestions.map((item) => (
+                  <div key={item.stationId} className="suggestion">
+                    <div>
+                      <strong>{item.stationName}</strong>
+                      {item.reason ? <span>{item.reason}</span> : null}
+                    </div>
+                    <div className="suggestionActions">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOriginId(item.stationId);
+                          setAssistOpen(false);
+                        }}
+                      >
+                        Start
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDestinationId(item.stationId);
+                          setAssistOpen(false);
+                        }}
+                      >
+                        Destination
+                      </button>
+                    </div>
+                  </div>
                 ))}
               </div>
             ) : null}
           </div>
-        ) : null}
+        </>
+      ) : null}
 
-      </div>
+      <nav className="tabBar" aria-label="Sections">
+        {(
+          [
+            ["plan", "Plan"],
+            ["map", "Map"],
+            ["trip", "Trip"]
+          ] as Array<[MobileView, string]>
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={mobileView === id ? "on" : ""}
+            aria-current={mobileView === id}
+            onClick={() => setMobileView(id)}
+          >
+            {label}
+            {id === "trip" && result?.confidence ? (
+              <i className={`dot dot-${result.confidence.toLowerCase()}`} />
+            ) : null}
+          </button>
+        ))}
+      </nav>
     </main>
   );
 }

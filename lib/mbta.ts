@@ -1,62 +1,242 @@
-import { LINE_LABELS, LineId, PlannedTrip, STATION_BY_ID } from "./network";
+import { bostonDateParts, mbtaFetch } from "./mbta-api";
+import { Avoid, emptyAvoid } from "./network";
+import type { Network } from "./network";
 
-const ROUTE_IDS: Record<LineId, string> = {
-  Red: "Red",
-  Orange: "Orange",
-  Blue: "Blue",
-  "Green-E": "Green-E"
-};
-
-export type PredictionSnapshot = {
+export type Departure = {
+  tripId: string | null;
+  headsign: string | null;
   departureTime: string | null;
+  arrivalTime: string | null;
   status: string | null;
+  source: "prediction" | "schedule";
 };
 
-export async function fetchUpcomingPredictions(stopId: string | undefined, line: LineId, limit = 4): Promise<PredictionSnapshot[]> {
-  if (!stopId) return [];
-  const key = process.env.MBTA_API_KEY;
-  const url = new URL("https://api-v3.mbta.com/predictions");
-  url.searchParams.set("filter[stop]", stopId);
-  url.searchParams.set("filter[route]", ROUTE_IDS[line]);
-  url.searchParams.set("sort", "departure_time");
-  url.searchParams.set("page[limit]", String(limit));
+const PREDICTION_TTL = 15;
+const SCHEDULE_TTL = 300;
 
-  const res = await fetch(url.toString(), {
-    headers: {
-      accept: "application/vnd.api+json",
-      ...(key ? { "x-api-key": key } : {})
-    },
-    next: { revalidate: 15 }
-  }).catch(() => null);
-
-  if (!res || !res.ok) return [];
-  const json = (await res.json()) as any;
-  return (json?.data ?? [])
-    .map((item: any) => ({
-      departureTime: item.attributes?.departure_time ?? item.attributes?.arrival_time ?? null,
-      status: item.attributes?.status ?? null
-    }))
-    .filter((item: PredictionSnapshot) => Boolean(item.departureTime));
+function readDepartures(payload: any, source: Departure["source"]): Departure[] {
+  const trips = new Map<string, any>(
+    (payload?.included ?? []).filter((item: any) => item.type === "trip").map((item: any) => [item.id, item])
+  );
+  return (payload?.data ?? [])
+    .map((item: any) => {
+      const tripId = item.relationships?.trip?.data?.id ?? null;
+      return {
+        tripId,
+        headsign: (tripId ? trips.get(tripId)?.attributes?.headsign : null) ?? item.attributes?.trip_headsign ?? null,
+        departureTime: item.attributes?.departure_time ?? null,
+        arrivalTime: item.attributes?.arrival_time ?? null,
+        status: item.attributes?.status ?? null,
+        source
+      } as Departure;
+    })
+    .filter((item: Departure) => Boolean(item.departureTime));
 }
 
-export async function fetchPrediction(stopId: string | undefined, line: LineId): Promise<PredictionSnapshot | null> {
-  const items = await fetchUpcomingPredictions(stopId, line, 1);
-  return items[0] ?? null;
+/**
+ * Real departures for one direction of one route. Live predictions first; when the
+ * feed has none (late night, or a route between trips) fall back to the published
+ * timetable. If neither exists we return nothing rather than inventing a time.
+ */
+export async function fetchDepartures(params: {
+  stationId: string;
+  routeId: string;
+  directionId: number | null;
+  afterIso: string;
+  limit?: number;
+}): Promise<Departure[]> {
+  const { stationId, routeId, directionId, afterIso } = params;
+  const limit = params.limit ?? 6;
+  const after = new Date(afterIso).getTime();
+
+  const predictionPayload = await mbtaFetch<any>(
+    "/predictions",
+    {
+      "filter[stop]": stationId,
+      "filter[route]": routeId,
+      "filter[direction_id]": directionId ?? undefined,
+      sort: "departure_time",
+      "page[limit]": 20,
+      include: "trip"
+    },
+    PREDICTION_TTL
+  );
+
+  const predictions = readDepartures(predictionPayload, "prediction").filter(
+    (item) => new Date(item.departureTime!).getTime() >= after
+  );
+  if (predictions.length) return predictions.slice(0, limit);
+
+  const { date, time } = bostonDateParts(afterIso);
+  const schedulePayload = await mbtaFetch<any>(
+    "/schedules",
+    {
+      "filter[stop]": stationId,
+      "filter[route]": routeId,
+      "filter[direction_id]": directionId ?? undefined,
+      "filter[date]": date,
+      "filter[min_time]": time,
+      sort: "departure_time",
+      "page[limit]": limit,
+      include: "trip"
+    },
+    SCHEDULE_TTL
+  );
+
+  return readDepartures(schedulePayload, "schedule")
+    .filter((item) => new Date(item.departureTime!).getTime() >= after)
+    .slice(0, limit);
+}
+
+/**
+ * When each of these specific trains reaches a specific station, read from the trips
+ * themselves — never a per-stop average. A trip missing from the result simply does
+ * not serve that station, which is how branch trains (Ashmont vs Braintree) are
+ * ruled out. Batched into one request per stage to stay inside the API rate limit.
+ */
+export async function fetchTripArrivals(
+  network: Network,
+  tripIds: string[],
+  stationId: string
+): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  const unique = Array.from(new Set(tripIds.filter(Boolean)));
+  if (!unique.length) return found;
+
+  const collect = (payload: any) => {
+    for (const item of payload?.data ?? []) {
+      const tripId = item.relationships?.trip?.data?.id;
+      const stopId = item.relationships?.stop?.data?.id;
+      if (!tripId || !stopId || found.has(tripId)) continue;
+      const parent = network.platformToStation[stopId] ?? stopId;
+      if (parent !== stationId) continue;
+      const arrival = item.attributes?.arrival_time ?? item.attributes?.departure_time;
+      if (arrival) found.set(tripId, arrival as string);
+    }
+  };
+
+  collect(
+    await mbtaFetch<any>(
+      "/predictions",
+      { "filter[trip]": unique.join(","), "filter[stop]": stationId },
+      PREDICTION_TTL
+    )
+  );
+
+  const missing = unique.filter((id) => !found.has(id));
+  if (missing.length) {
+    collect(
+      await mbtaFetch<any>(
+        "/schedules",
+        { "filter[trip]": missing.join(","), "filter[stop]": stationId },
+        SCHEDULE_TTL
+      )
+    );
+  }
+
+  return found;
+}
+
+export type ServiceAlert = {
+  id: string;
+  header: string;
+  effect: string;
+  severity: number;
+  routeIds: string[];
+  stationIds: string[];
+  /** Route/stop pairs kept together: a suspension hits one line at a station, not all of them. */
+  entities: Array<{ routeId: string | null; stationId: string | null }>;
+  /** True when the alert covers a whole route rather than named stops. */
+  wholeRoute: boolean;
+};
+
+/** Effects that mean trains are not running, as opposed to running badly. */
+const DISABLING_EFFECTS = new Set(["SUSPENSION", "STATION_CLOSURE", "NO_SERVICE", "SHUTTLE"]);
+
+export function isDisabling(effect: string) {
+  return DISABLING_EFFECTS.has(effect);
+}
+
+const ALERT_TTL = 60;
+
+/**
+ * Active alerts touching the routes in this trip. Without these the app can score
+ * a transfer "Likely" at a station that is closed or being shuttle-bussed.
+ */
+export async function fetchAlerts(network: Network, routeIds: string[]): Promise<ServiceAlert[]> {
+  if (!routeIds.length) return [];
+  const payload = await mbtaFetch<any>(
+    "/alerts",
+    { "filter[route]": Array.from(new Set(routeIds)).join(","), "filter[datetime]": "NOW" },
+    ALERT_TTL
+  );
+
+  return (payload?.data ?? []).map((item: any) => {
+    const rawEntities: any[] = item.attributes?.informed_entity ?? [];
+    const alertRoutes = new Set<string>();
+    const stationIds = new Set<string>();
+    const entities: ServiceAlert["entities"] = [];
+    let wholeRoute = false;
+
+    for (const entity of rawEntities) {
+      const stationId = entity.stop ? (network.platformToStation[entity.stop] ?? entity.stop) : null;
+      const routeId = entity.route ?? null;
+      if (routeId) alertRoutes.add(routeId);
+      if (stationId) stationIds.add(stationId);
+      else if (routeId) wholeRoute = true;
+      entities.push({ routeId, stationId });
+    }
+
+    return {
+      id: item.id,
+      header: item.attributes?.header ?? "",
+      effect: item.attributes?.effect ?? "UNKNOWN",
+      severity: item.attributes?.severity ?? 0,
+      routeIds: [...alertRoutes],
+      stationIds: [...stationIds],
+      entities,
+      wholeRoute
+    } as ServiceAlert;
+  });
+}
+
+/**
+ * Turn alerts into a set the planner can route around. A station closure takes the
+ * station out entirely; a line suspension only takes out that line's edges there,
+ * so other lines through the same station stay usable.
+ */
+export function blockedFromAlerts(alerts: ServiceAlert[]): Avoid {
+  const avoid = emptyAvoid();
+  for (const alert of alerts) {
+    if (!isDisabling(alert.effect)) continue;
+    for (const entity of alert.entities) {
+      if (alert.effect === "STATION_CLOSURE" && entity.stationId) {
+        avoid.stations.add(entity.stationId);
+      } else if (entity.routeId && entity.stationId) {
+        avoid.routeStops.add(`${entity.routeId}|${entity.stationId}`);
+      } else if (entity.routeId) {
+        avoid.routes.add(entity.routeId);
+      }
+    }
+  }
+  return avoid;
 }
 
 export function formatClock(iso?: string | null) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (!iso) return null;
+  return new Date(iso).toLocaleTimeString("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit"
+  });
 }
 
 export function addMinutes(baseIso: string, minutes: number) {
-  const d = new Date(baseIso);
-  d.setMinutes(d.getMinutes() + minutes);
-  return d.toISOString();
+  return new Date(new Date(baseIso).getTime() + minutes * 60000).toISOString();
 }
 
 export function scoreTransfer(params: { arrivalIso?: string | null; departureIso?: string | null; walkMinutes: number }) {
-  if (!params.arrivalIso || !params.departureIso) return { label: "Scheduled", seconds: null as number | null };
+  if (!params.arrivalIso || !params.departureIso) return { label: null as string | null, seconds: null as number | null };
   const arrival = new Date(params.arrivalIso).getTime();
   const departure = new Date(params.departureIso).getTime();
   const margin = Math.floor((departure - arrival) / 1000 - params.walkMinutes * 60);
@@ -65,56 +245,25 @@ export function scoreTransfer(params: { arrivalIso?: string | null; departureIso
   return { label: "Unlikely", seconds: margin };
 }
 
+const CONFIDENCE_RANK: Record<string, number> = { Likely: 0, Risky: 1, Unlikely: 2 };
+
+/** A trip is only as reliable as its tightest transfer. */
+export function worstConfidence(labels: Array<string | null>) {
+  const known = labels.filter((label): label is string => Boolean(label));
+  if (!known.length) return null;
+  return known.reduce((worst, label) => ((CONFIDENCE_RANK[label] ?? 0) > (CONFIDENCE_RANK[worst] ?? 0) ? label : worst));
+}
+
 export function formatMinutes(seconds: number | null) {
-  if (seconds === null) return "—";
+  if (seconds === null) return null;
   const sign = seconds >= 0 ? "+" : "−";
   const abs = Math.abs(seconds);
-  const m = Math.floor(abs / 60);
-  const s = abs % 60;
-  return `${sign}${m}m ${String(s).padStart(2, "0")}s`;
+  return `${sign}${Math.floor(abs / 60)}m ${String(abs % 60).padStart(2, "0")}s`;
 }
 
-export function buildRouteGeometry(trip: PlannedTrip) {
-  return trip.steps.filter((step) => step.kind === "ride" && step.line).map((step) => ({
-    line: step.line!,
-    points: step.stations.map((station) => [station.lat, station.lon] as [number, number])
-  }));
-}
-
-export function buildMarkers(trip: PlannedTrip) {
-  const markers: Array<{ kind: "board" | "transfer" | "arrive"; name: string; lat: number; lon: number }> = [];
-  markers.push({ kind: "board", name: trip.origin.name, lat: trip.origin.lat, lon: trip.origin.lon });
-  trip.steps.forEach((step, idx) => {
-    if (step.kind === "transfer") {
-      markers.push({ kind: "transfer", name: step.from.name, lat: step.from.lat, lon: step.from.lon });
-    }
-    if (idx === trip.steps.length - 1) {
-      markers.push({ kind: "arrive", name: trip.destination.name, lat: trip.destination.lat, lon: trip.destination.lon });
-    }
-  });
-  return markers;
-}
-
-export function tripSubtitle(trip: PlannedTrip) {
-  return trip.steps.filter((s) => s.kind === "ride" && s.line).map((s) => `${LINE_LABELS[s.line!]} to ${s.to.name}`).join(" · ");
-}
-
-export function stationCandidatesFallback(query: string) {
-  const q = query.toLowerCase();
-  const presets = [
-    { key: ["garden", "td"], id: "north-station", reason: "Closest MBTA station for TD Garden and nearby event traffic." },
-    { key: ["common", "park"], id: "park-street", reason: "Park Street is the most direct station for Boston Common." },
-    { key: ["logan", "airport"], id: "airport", reason: "Airport Station is the best MBTA connection for Logan access." },
-    { key: ["northeastern", "museum of fine arts", "mfa"], id: "northeastern", reason: "Northeastern University station is the strongest Green Line E fit." },
-    { key: ["state house", "government"], id: "government-center", reason: "Government Center is a strong Blue/Green transfer near downtown landmarks." }
-  ];
-  const matches = presets.filter((p) => p.key.some((token) => q.includes(token)));
-  if (!matches.length) {
-    return [
-      { stationId: "park-street", stationName: STATION_BY_ID["park-street"].name, reason: "Central downtown transfer point for many Boston destinations." },
-      { stationId: "north-station", stationName: STATION_BY_ID["north-station"].name, reason: "Good starting point for downtown venues and Green/Orange transfers." },
-      { stationId: "government-center", stationName: STATION_BY_ID["government-center"].name, reason: "Strong option when the destination is near the Government Center / State House area." }
-    ];
-  }
-  return matches.map((m) => ({ stationId: m.id, stationName: STATION_BY_ID[m.id].name, reason: m.reason }));
+export function formatDuration(startIso?: string | null, endIso?: string | null) {
+  if (!startIso || !endIso) return null;
+  const minutes = Math.max(0, Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 60000));
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
