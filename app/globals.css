@@ -1548,6 +1548,25 @@ h3 {
     grid-column: auto;
   }
 
+  /* Before a trip exists the third column holds one short card, which left a
+     large void at wide widths. Drop to two columns and stack the placeholder
+     under the form, letting the map take the space instead. */
+  .workspace:not(.planned) {
+    grid-template-columns: 340px minmax(0, 1fr);
+    /* Row 1 to its content, or the map spanning both rows inflates it and leaves
+       a gap between the two cards stacked in column 1. */
+    grid-template-rows: auto 1fr;
+  }
+
+  .workspace:not(.planned) .colTrip {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .workspace:not(.planned) .colMap {
+    grid-row: 1 / span 2;
+  }
+
 
   .mapCanvas {
     height: clamp(520px, 72vh, 860px);

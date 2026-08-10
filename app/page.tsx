@@ -488,7 +488,7 @@ export default function HomePage() {
         </button>
       ) : null}
 
-      <div className="workspace">
+      <div className={planned ? "workspace planned" : "workspace"}>
         <section className={`col colPlan ${mobileView === "plan" ? "activeView" : ""}`} aria-label="Trip setup">
           <div className="card">
             <div className="cardHead">
